@@ -16,10 +16,11 @@ const FIREBASE_CONFIG = {
 // State
 // ==============================
 const state = {
-  tasks: [],
   currentUser: null,
-  tokenRefreshAttempted: false,
-  isServerWarmingUp: false
+  tasks: [],
+  dragData: null,
+  isServerWarmingUp: false,
+  tokenRefreshAttempted: false
 };
 
 // ==============================
@@ -58,6 +59,8 @@ const elements = {
   }
 };
 
+const userInfoContainer = elements.logoutBtn ? elements.logoutBtn.closest('.user-info') : null;
+
 // ==============================
 // Firebase init (compat SDK loaded in index.html)
 // ==============================
@@ -70,18 +73,26 @@ const auth = firebase.auth();
 auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
-    elements.userEmail.textContent = user.email;
-    elements.userAvatar.textContent = user.email.charAt(0).toUpperCase();
-    
+    // Fill header UI
+    if (elements.userEmail) elements.userEmail.textContent = user.email || "";
+    if (elements.userAvatar) elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase();
+    // Show user-info & logout
+    if (userInfoContainer) userInfoContainer.classList.remove("hidden");
+    if (elements.logoutBtn) elements.logoutBtn.classList.remove("hidden");
+
+    // Show the board immediately so it doesn't look like nothing happened
+    showBoard();
     try {
       await loadTasks();
-      showBoard();
     } catch (err) {
-      showToast("Failed to load tasks. Please try again.", "error");
+      showToast("You're signed in, but tasks couldn't load yet. Try Refresh.", "warning");
       console.error(err);
     }
   } else {
     state.currentUser = null;
+    // Hide user-info & logout
+    if (userInfoContainer) userInfoContainer.classList.add("hidden");
+    if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
     showAuth();
   }
 });
@@ -118,6 +129,7 @@ function setupAuthListeners() {
       document.getElementById("register-error").textContent = "Passwords do not match";
       return;
     }
+
     try {
       showLoading(true);
       await auth.createUserWithEmailAndPassword(email, password);
@@ -186,32 +198,24 @@ async function apiFetch(path, options = {}) {
 
   try {
     const user = auth.currentUser;
-    if (!user) throw new Error("User not authenticated");
+    const token = user ? await user.getIdToken() : null;
 
-    const token = await user.getIdToken();
-    const headers = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {})
-    };
-
-    const { onComplete, isRetry, ...fetchOptions } = options; // don't pass our custom fields to fetch
     const response = await fetch(`${API_BASE}${path}`, {
-      ...fetchOptions,
-      headers
+      method: options.method || "GET",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined
     });
 
     if (options.onComplete) options.onComplete();
 
-    if (response.status === 401) {
-      const text = await response.text().catch(() => "");
-      // refresh token ONCE if invalid/expired
-      if (text.includes("Invalid Firebase token") && !state.tokenRefreshAttempted) {
-        state.tokenRefreshAttempted = true;
-        await user.getIdToken(true);
-        return apiFetch(path, { ...options, isRetry: true });
-      }
-      throw new Error(text || "Authentication failed");
+    // handle token expiration once
+    if (response.status === 401 && !state.tokenRefreshAttempted && auth.currentUser) {
+      state.tokenRefreshAttempted = true;
+      await auth.currentUser.getIdToken(true);
+      return apiFetch(path, { ...options, isRetry: true });
     }
 
     if (!response.ok) {
@@ -231,243 +235,117 @@ async function apiFetch(path, options = {}) {
 }
 
 // ==============================
-// Tasks
+// CRUD
 // ==============================
 async function loadTasks() {
+  showLoading(true);
   try {
-    showLoading(true);
-    state.tasks = await apiFetch("/api/Tasks");
+    const data = await apiFetch("/api/Tasks");
+    state.tasks = Array.isArray(data) ? data : [];
     renderBoard();
   } catch (error) {
-    if (
-      error.message.includes("Missing Firebase token") ||
-      error.message.includes("Invalid Firebase token")
-    ) {
-      showToast("Authentication error. Please log in again.", "error");
-      auth.signOut();
-    } else {
-      showToast(error.message || "Failed to load tasks.", "error");
-      console.error(error);
-    }
+    showToast("Failed to load tasks.", "error");
+    console.error(error);
   } finally {
     showLoading(false);
   }
 }
 
-function renderBoard() {
-  Object.values(elements.taskLists).forEach((list) => (list.innerHTML = ""));
-
-  const tasksByColumn = { 1: [], 2: [], 3: [], other: [] };
-  state.tasks.forEach((t) => {
-    if ([1, 2, 3].includes(t.columnId)) tasksByColumn[t.columnId].push(t);
-    else tasksByColumn.other.push(t);
-  });
-
-  // Update task counts
-  elements.taskCounts[1].textContent = `${tasksByColumn[1].length} task${tasksByColumn[1].length !== 1 ? 's' : ''}`;
-  elements.taskCounts[2].textContent = `${tasksByColumn[2].length} task${tasksByColumn[2].length !== 1 ? 's' : ''}`;
-  elements.taskCounts[3].textContent = `${tasksByColumn[3].length} task${tasksByColumn[3].length !== 1 ? 's' : ''}`;
-
-  for (const [columnId, tasks] of Object.entries(tasksByColumn)) {
-    if (columnId === "other") continue;
-    const list = elements.taskLists[columnId];
-    if (!list) continue;
-    if (tasks.length === 0) {
-      list.innerHTML = '<p class="no-tasks">No tasks in this column</p>';
-      continue;
-    }
-    list.innerHTML = "";
-    tasks.forEach((task) => list.appendChild(createTaskCard(task)));
-  }
-
-  if (tasksByColumn.other.length > 0) {
-    console.warn("Tasks with unknown column IDs:", tasksByColumn.other);
-  }
-}
-
-function createTaskCard(task) {
-  const card = document.createElement("div");
-  card.className = "task-card";
-  card.setAttribute("data-task-id", task.id);
-  card.draggable = true;
-
-  const title = document.createElement("h4");
-  title.textContent = task.title;
-
-  const description = document.createElement("p");
-  description.textContent = task.description || "No description";
-
-  card.appendChild(title);
-  card.appendChild(description);
-
-  if (task.tags) {
-    const tagsContainer = document.createElement("div");
-    tagsContainer.className = "task-tags";
-    task.tags.split(",").forEach((tag) => {
-      const t = tag.trim();
-      if (!t) return;
-      const chip = document.createElement("span");
-      chip.className = "task-tag";
-      chip.textContent = t;
-      tagsContainer.appendChild(chip);
-    });
-    if (tagsContainer.children.length) card.appendChild(tagsContainer);
-  }
-
-  if (task.dueDate) {
-    const due = document.createElement("div");
-    due.className = "task-meta";
-    due.innerHTML = `<i class="far fa-calendar-alt"></i> Due: ${formatDate(task.dueDate)}`;
-    card.appendChild(due);
-  }
-
-  card.addEventListener("click", () => openEditModal(task));
-  card.addEventListener("dragstart", handleDragStart);
-  card.addEventListener("dragend", handleDragEnd);
-
-  return card;
-}
-
-function formatDate(s) {
-  const d = new Date(s);
-  return d.toLocaleDateString() + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-// ==============================
-// Modal + CRUD
-// ==============================
-function openEditModal(task = null) {
-  const isNew = !task;
-  const modalTitle = document.getElementById("modal-title");
-  const form = document.getElementById("task-form");
-
-  if (isNew) {
-    modalTitle.textContent = "Add New Task";
-    form.reset();
-    document.getElementById("task-id").value = "";
-    document.getElementById("task-isDone").checked = false;
-    document.getElementById("task-columnId").value = "1";
-  } else {
-    modalTitle.textContent = "Edit Task";
-    document.getElementById("task-id").value = task.id;
-    document.getElementById("task-title").value = task.title;
-    document.getElementById("task-description").value = task.description || "";
-    document.getElementById("task-tags").value = task.tags || "";
-    document.getElementById("task-dueDate").value = task.dueDate ? task.dueDate.substring(0, 16) : "";
-    document.getElementById("task-isDone").checked = task.isDone;
-    document.getElementById("task-columnId").value = task.columnId;
-  }
-
-  elements.taskDelete.style.display = isNew ? "none" : "block";
-  elements.taskModal.classList.remove("hidden");
-}
-
-function closeModal() {
-  elements.taskModal.classList.add("hidden");
-}
-
-async function createTask(taskData) {
+async function createTask(task) {
+  showLoading(true);
   try {
-    const newTask = await apiFetch("/api/Tasks", {
+    const created = await apiFetch("/api/Tasks", {
       method: "POST",
-      body: JSON.stringify(taskData)
+      body: task
     });
-    state.tasks.push(newTask);
+    state.tasks.push(created);
     renderBoard();
-    showToast("Task created successfully", "success");
-    return newTask;
+    showToast("Task created!", "success");
   } catch (error) {
-    showToast("Failed to create task: " + (error.message || ""), "error");
-    throw error;
+    showToast("Failed to create task.", "error");
+    console.error(error);
+  } finally {
+    showLoading(false);
   }
 }
 
-async function updateTask(taskId, taskData) {
+async function updateTask(id, updates) {
+  showLoading(true);
   try {
-    await apiFetch(`/api/Tasks/${taskId}`, {
+    const updated = await apiFetch(`/api/Tasks/${id}`, {
       method: "PUT",
-      body: JSON.stringify(taskData)
+      body: updates
     });
-    const idx = state.tasks.findIndex((t) => t.id === Number(taskId));
-    if (idx !== -1) state.tasks[idx] = { ...state.tasks[idx], ...taskData };
+    const idx = state.tasks.findIndex((t) => t.id === id);
+    if (idx !== -1) state.tasks[idx] = updated;
     renderBoard();
-    showToast("Task updated successfully", "success");
   } catch (error) {
-    showToast("Failed to update task: " + (error.message || ""), "error");
-    throw error;
+    showToast("Failed to update task.", "error");
+    console.error(error);
+  } finally {
+    showLoading(false);
   }
 }
 
-async function deleteTask(taskId) {
-  if (!confirm("Are you sure you want to delete this task?")) return;
-
-  const original = [...state.tasks];
+async function deleteTask(id) {
+  showLoading(true);
   try {
-    state.tasks = state.tasks.filter((t) => t.id !== Number(taskId));
+    await apiFetch(`/api/Tasks/${id}`, { method: "DELETE" });
+    state.tasks = state.tasks.filter((t) => t.id !== id);
     renderBoard();
-    await apiFetch(`/api/Tasks/${taskId}`, { method: "DELETE" });
-    showToast("Task deleted successfully", "success");
+    showToast("Task deleted.", "success");
   } catch (error) {
-    state.tasks = original; // rollback
-    renderBoard();
-    showToast("Failed to delete task: " + (error.message || ""), "error");
-    throw error;
+    showToast("Failed to delete task.", "error");
+    console.error(error);
+  } finally {
+    showLoading(false);
   }
 }
 
 // ==============================
 // Drag & Drop
 // ==============================
-function handleDragStart(e) {
-  e.dataTransfer.setData("text/plain", e.target.getAttribute("data-task-id"));
-  e.target.classList.add("dragging");
-}
-function handleDragEnd(e) {
-  e.target.classList.remove("dragging");
-}
-
 function setupDragAndDrop() {
-  const columns = document.querySelectorAll(".column");
-  columns.forEach((column) => {
-    column.addEventListener("dragover", (e) => {
+  document.querySelectorAll(".task").forEach((card) => {
+    card.setAttribute("draggable", "true");
+  });
+
+  document.addEventListener("dragstart", (e) => {
+    const card = e.target.closest(".task");
+    if (!card) return;
+    e.dataTransfer.effectAllowed = "move";
+    state.dragData = {
+      id: card.dataset.id,
+      from: parseInt(card.dataset.status, 10)
+    };
+    card.classList.add("dragging");
+  });
+
+  document.addEventListener("dragend", (e) => {
+    const card = e.target.closest(".task");
+    if (card) card.classList.remove("dragging");
+    state.dragData = null;
+  });
+
+  document.querySelectorAll(".task-list").forEach((list) => {
+    list.addEventListener("dragover", (e) => {
       e.preventDefault();
-      column.classList.add("drag-over");
+      list.classList.add("drag-over");
     });
-    column.addEventListener("dragleave", () => column.classList.remove("drag-over"));
-    column.addEventListener("drop", async (e) => {
+    list.addEventListener("dragleave", () => list.classList.remove("drag-over"));
+    list.addEventListener("drop", async (e) => {
       e.preventDefault();
-      column.classList.remove("drag-over");
-
-      const taskId = e.dataTransfer.getData("text/plain");
-      const newColumnId = parseInt(column.id.split("-")[1], 10);
-
-      // FIX: declare outside try so catch can access
-      let originalColumnId = null;
-      let movedTask = null;
+      list.classList.remove("drag-over");
+      const toStatus = parseInt(list.dataset.status, 10);
+      if (!state.dragData) return;
+      const { id, from } = state.dragData;
+      if (from === toStatus) return;
 
       try {
-        movedTask = state.tasks.find((t) => t.id == taskId);
-        if (!movedTask) return;
-        originalColumnId = movedTask.columnId;
-
-        // optimistic move
-        movedTask.columnId = newColumnId;
-        renderBoard();
-
-        await updateTask(taskId, {
-          title: movedTask.title,
-          isDone: movedTask.isDone,
-          columnId: newColumnId,
-          description: movedTask.description,
-          tags: movedTask.tags,
-          dueDate: movedTask.dueDate
-        });
+        await updateTask(id, { columnId: toStatus });
+        showToast("Task moved.", "success");
       } catch (error) {
-        // rollback on error
-        if (movedTask && originalColumnId != null) {
-          movedTask.columnId = originalColumnId;
-          renderBoard();
-        }
+        showToast("Failed to move task.", "error");
       }
     });
   });
@@ -505,74 +383,89 @@ function showToast(message, type = "info") {
 }
 
 // ==============================
-// Init
+// Rendering
 // ==============================
-function init() {
-  setupAuthListeners();
+function renderBoard() {
+  // Clear lists
+  [1, 2, 3].forEach((id) => {
+    elements.taskLists[id].innerHTML = "";
+  });
+
+  const byCol = { 1: [], 2: [], 3: [] };
+  state.tasks.forEach((t) => {
+    const col = byCol[t.columnId] || byCol[1];
+    col.push(t);
+  });
+
+  [1, 2, 3].forEach((id) => {
+    const list = elements.taskLists[id];
+    const tasks = byCol[id] || [];
+    elements.taskCounts[id].textContent = tasks.length;
+
+    tasks.forEach((t) => {
+      const card = document.createElement("div");
+      card.className = "task";
+      card.dataset.id = t.id;
+      card.dataset.status = t.columnId;
+      card.innerHTML = `
+        <div class="task-title">${escapeHtml(t.title)}</div>
+        <div class="task-meta">
+          <span>${t.priority || "Normal"}</span>
+          ${t.dueDate ? `<span>${new Date(t.dueDate).toLocaleDateString()}</span>` : ""}
+        </div>
+      `;
+      card.addEventListener("click", () => openEditModal(t));
+      card.setAttribute("draggable", "true");
+      list.appendChild(card);
+    });
+  });
+
   setupDragAndDrop();
+}
 
-  elements.refreshBtn.addEventListener("click", () => loadTasks());
-  elements.addTaskBtn.addEventListener("click", () => openEditModal());
-  elements.modalClose.addEventListener("click", closeModal);
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
 
-  elements.taskModal.addEventListener("click", (e) => {
-    if (e.target === elements.taskModal) closeModal();
-  });
+// ==============================
+// Modal
+// ==============================
+function openEditModal(task = null) {
+  elements.taskModal.classList.remove("hidden");
+  document.getElementById("task-id").value = task ? task.id : "";
+  document.getElementById("task-title").value = task ? task.title : "";
+  document.getElementById("task-desc").value = task ? (task.description || "") : "";
+  document.getElementById("task-priority").value = task ? (task.priority || "Normal") : "Normal";
+  document.getElementById("task-status").value = task ? (task.columnId || 1) : 1;
+  document.getElementById("task-due").value = task && task.dueDate ? new Date(task.dueDate).toISOString().slice(0, 10) : "";
+  elements.taskDelete.classList.toggle("hidden", !task);
+}
+function closeModal() {
+  elements.taskModal.classList.add("hidden");
+}
 
-  elements.taskForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const taskId = document.getElementById("task-id").value;
-    const taskData = {
-      title: document.getElementById("task-title").value,
-      description: document.getElementById("task-description").value || null,
-      tags: document.getElementById("task-tags").value || null,
-      dueDate: document.getElementById("task-dueDate").value
-        ? new Date(document.getElementById("task-dueDate").value).toISOString()
-        : null,
-      isDone: document.getElementById("task-isDone").checked,
-      columnId: parseInt(document.getElementById("task-columnId").value, 10)
-    };
-    try {
-      showLoading(true);
-      if (taskId) await updateTask(taskId, taskData);
-      else await createTask(taskData);
-      closeModal();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      showLoading(false);
-    }
-  });
+// ==============================
+// Add inline "quick add" forms
+// ==============================
+function wireQuickAddForms() {
+  elements.addTaskForms.forEach((form) => {
+    const input = form.querySelector("input[type='text']");
+    const button = form.querySelector("button[type='submit']");
+    const columnId = parseInt(form.dataset.status, 10);
 
-  elements.taskDelete.addEventListener("click", async () => {
-    const taskId = document.getElementById("task-id").value;
-    if (!taskId) return;
-    try {
-      showLoading(true);
-      await deleteTask(taskId);
-      closeModal();
-    } catch (err) {
-      console.error(err);
-    } finally {
-      showLoading(false);
-    }
-  });
-
-  // Inline add-task forms
-  elements.addTaskForms.forEach((form, idx) => {
-    const input = form.querySelector("input");
-    const button = form.querySelector("button");
-    const columnId = idx + 1;
-    button.addEventListener("click", async () => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
       const title = input.value.trim();
       if (!title) return;
       try {
         showLoading(true);
         await createTask({
           title,
+          description: "",
+          priority: "Normal",
           columnId,
-          description: null,
-          tags: null,
           dueDate: null,
           isDone: false
         });
@@ -590,11 +483,70 @@ function init() {
       }
     });
   });
+}
 
-  // CORS heads-up if not the whitelisted Render origin
-  if (window.location.origin !== "https://kanban-board-xtt1.onrender.com") {
-    elements.corsWarning.classList.remove("hidden");
-  }
+// ==============================
+// Init
+// ==============================
+function init() {
+  // Ensure signed-out header is hidden by default
+  if (userInfoContainer) userInfoContainer.classList.add("hidden");
+  if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
+
+  setupAuthListeners();
+  setupDragAndDrop();
+
+  elements.refreshBtn.addEventListener("click", () => loadTasks());
+  elements.addTaskBtn.addEventListener("click", () => openEditModal());
+  elements.modalClose.addEventListener("click", closeModal);
+
+  elements.taskModal.addEventListener("click", (e) => {
+    if (e.target === elements.taskModal) closeModal();
+  });
+
+  elements.taskForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const taskId = document.getElementById("task-id").value;
+    const taskData = {
+      title: document.getElementById("task-title").value.trim(),
+      description: document.getElementById("task-desc").value.trim(),
+      priority: document.getElementById("task-priority").value,
+      columnId: parseInt(document.getElementById("task-status").value, 10),
+      dueDate: document.getElementById("task-due").value ? new Date(document.getElementById("task-due").value).toISOString() : null,
+      isDone: false
+    };
+
+    if (!taskData.title) {
+      showToast("Title is required.", "warning");
+      return;
+    }
+
+    try {
+      if (taskId) {
+        await updateTask(taskId, taskData);
+        showToast("Task updated!", "success");
+      } else {
+        await createTask(taskData);
+      }
+      closeModal();
+    } catch (error) {
+      showToast("Failed to save task.", "error");
+      console.error(error);
+    }
+  });
+
+  elements.taskDelete.addEventListener("click", async () => {
+    const id = document.getElementById("task-id").value;
+    if (!id) return;
+    try {
+      await deleteTask(id);
+      closeModal();
+    } catch (error) {
+      showToast("Failed to delete.", "error");
+    }
+  });
+
+  wireQuickAddForms();
 }
 
 document.addEventListener("DOMContentLoaded", init);
