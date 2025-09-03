@@ -3,22 +3,34 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kanban Board</title>
+    <title>Kanban Board | Modern Task Management</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
 </head>
 <body>
     <header>
-        <h1>Kanban Board</h1>
-        <button id="logout-btn" class="btn-secondary">Logout</button>
+        <div class="logo">
+            <i class="fas fa-tasks"></i>
+            <span>KanbanFlow</span>
+        </div>
+        <div class="user-info">
+            <span id="user-email"></span>
+            <div class="user-avatar" id="user-avatar">U</div>
+            <button id="logout-btn" class="btn btn-secondary btn-small">Logout</button>
+        </div>
     </header>
 
     <main>
         <!-- Auth Section -->
         <section id="auth-section" class="auth-section">
             <div class="auth-container">
-                <h2>Welcome to Kanban Board</h2>
+                <div class="auth-header">
+                    <h2>Welcome to KanbanFlow</h2>
+                    <p>Organize your tasks efficiently</p>
+                </div>
+                
                 <div class="auth-tabs">
                     <button class="auth-tab active" data-tab="login">Login</button>
                     <button class="auth-tab" data-tab="register">Register</button>
@@ -33,7 +45,7 @@
                         <label for="login-password">Password</label>
                         <input type="password" id="login-password" required>
                     </div>
-                    <button type="submit" class="btn-primary">Login</button>
+                    <button type="submit" class="btn btn-primary" style="width: 100%">Login</button>
                     <div class="auth-error" id="login-error"></div>
                 </form>
                 
@@ -50,19 +62,19 @@
                         <label for="register-confirm">Confirm Password</label>
                         <input type="password" id="register-confirm" required>
                     </div>
-                    <button type="submit" class="btn-primary">Register</button>
+                    <button type="submit" class="btn btn-primary" style="width: 100%">Register</button>
                     <div class="auth-error" id="register-error"></div>
                 </form>
                 
                 <div class="auth-divider">
-                    <span>or</span>
+                    <span>or continue with</span>
                 </div>
                 
-                <button id="google-signin" class="btn-google">
+                <button id="google-signin" class="btn btn-google" style="width: 100%">
                     <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 488 512">
                         <path fill="currentColor" d="M488 261.8C488 403.3 391.1 504 248 504 110.8 504 0 393.2 0 256S110.8 8 248 8c66.8 0 123 24.5 166.3 64.9l-67.5 64.9C258.5 52.6 94.3 116.6 94.3 256c0 86.5 69.1 156.6 153.7 156.6 98.2 0 135-70.4 140.8-106.9H248v-85.3h236.1c2.3 12.7 3.9 24.9 3.9 41.4z"/>
                     </svg>
-                    Continue with Google
+                    Google
                 </button>
             </div>
         </section>
@@ -70,43 +82,70 @@
         <!-- Board Section -->
         <section id="board-section" class="board-section hidden">
             <div id="cors-warning" class="cors-warning hidden">
-                <p>⚠️ CORS Warning: The current origin may be blocked by the backend. If requests fail, ask the admin to add your origin to the allowed list.</p>
-            </div>
-            
-            <div class="board-header">
-                <button id="refresh-btn" class="btn-secondary">Refresh</button>
-                <button id="add-task-btn" class="btn-primary">Add Task</button>
+                <i class="fas fa-exclamation-triangle"></i>
+                <p>CORS Warning: The current origin may be blocked by the backend. If requests fail, ask the admin to add your origin to the allowed list.</p>
             </div>
             
             <div id="warmup-message" class="warmup-message hidden">
-                <p>🔥 Warming up server... Please wait</p>
+                <i class="fas fa-fire"></i>
+                <p>Warming up server... Please wait</p>
+            </div>
+            
+            <div class="board-header">
+                <h2 class="board-title">My Task Board</h2>
+                <div class="board-actions">
+                    <button id="refresh-btn" class="btn btn-secondary">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
+                    <button id="add-task-btn" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> Add Task
+                    </button>
+                </div>
             </div>
             
             <div class="kanban-board">
-                <div class="column" id="lane-1">
-                    <h3>Active Tasks</h3>
+                <div class="column column-1" id="lane-1">
+                    <div class="column-header">
+                        <div class="column-icon">
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <h3>Active Tasks</h3>
+                        <span class="task-count">0 tasks</span>
+                    </div>
                     <div class="task-list"></div>
                     <div class="add-task-form">
                         <input type="text" placeholder="Add a new task..." class="task-title-input">
-                        <button class="btn-small">Add</button>
+                        <button class="btn btn-primary btn-small">Add</button>
                     </div>
                 </div>
                 
-                <div class="column" id="lane-2">
-                    <h3>In Progress</h3>
+                <div class="column column-2" id="lane-2">
+                    <div class="column-header">
+                        <div class="column-icon">
+                            <i class="fas fa-spinner"></i>
+                        </div>
+                        <h3>In Progress</h3>
+                        <span class="task-count">0 tasks</span>
+                    </div>
                     <div class="task-list"></div>
                     <div class="add-task-form">
                         <input type="text" placeholder="Add a new task..." class="task-title-input">
-                        <button class="btn-small">Add</button>
+                        <button class="btn btn-primary btn-small">Add</button>
                     </div>
                 </div>
                 
-                <div class="column" id="lane-3">
-                    <h3>Completed Tasks</h3>
+                <div class="column column-3" id="lane-3">
+                    <div class="column-header">
+                        <div class="column-icon">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <h3>Completed Tasks</h3>
+                        <span class="task-count">0 tasks</span>
+                    </div>
                     <div class="task-list"></div>
                     <div class="add-task-form">
                         <input type="text" placeholder="Add a new task..." class="task-title-input">
-                        <button class="btn-small">Add</button>
+                        <button class="btn btn-primary btn-small">Add</button>
                     </div>
                 </div>
             </div>
@@ -117,51 +156,53 @@
     <div id="task-modal" class="modal hidden">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 id="modal-title">Edit Task</h2>
+                <h2 class="modal-title" id="modal-title">Edit Task</h2>
                 <button id="modal-close" class="modal-close">&times;</button>
             </div>
-            <form id="task-form">
-                <input type="hidden" id="task-id">
-                
-                <div class="form-group">
-                    <label for="task-title">Title *</label>
-                    <input type="text" id="task-title" required>
-                </div>
-                
-                <div class="form-group">
-                    <label for="task-description">Description</label>
-                    <textarea id="task-description" rows="3"></textarea>
-                </div>
-                
-                <div class="form-group">
-                    <label for="task-tags">Tags (comma separated)</label>
-                    <input type="text" id="task-tags">
-                </div>
-                
-                <div class="form-group">
-                    <label for="task-dueDate">Due Date</label>
-                    <input type="datetime-local" id="task-dueDate">
-                </div>
-                
-                <div class="form-group checkbox-group">
-                    <input type="checkbox" id="task-isDone">
-                    <label for="task-isDone">Completed</label>
-                </div>
-                
-                <div class="form-group">
-                    <label for="task-columnId">Status</label>
-                    <select id="task-columnId" required>
-                        <option value="1">Active Tasks</option>
-                        <option value="2">In Progress</option>
-                        <option value="3">Completed Tasks</option>
-                    </select>
-                </div>
-                
-                <div class="modal-actions">
-                    <button type="button" id="task-delete" class="btn-danger">Delete</button>
-                    <button type="submit" class="btn-primary">Save</button>
-                </div>
-            </form>
+            <div class="modal-body">
+                <form id="task-form">
+                    <input type="hidden" id="task-id">
+                    
+                    <div class="form-group">
+                        <label for="task-title">Title *</label>
+                        <input type="text" id="task-title" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="task-description">Description</label>
+                        <textarea id="task-description" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="task-tags">Tags (comma separated)</label>
+                        <input type="text" id="task-tags">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="task-dueDate">Due Date</label>
+                        <input type="datetime-local" id="task-dueDate">
+                    </div>
+                    
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="task-isDone">
+                        <label for="task-isDone">Mark as completed</label>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="task-columnId">Status</label>
+                        <select id="task-columnId" required>
+                            <option value="1">Active Tasks</option>
+                            <option value="2">In Progress</option>
+                            <option value="3">Completed Tasks</option>
+                        </select>
+                    </div>
+                    
+                    <div class="modal-actions">
+                        <button type="button" id="task-delete" class="btn btn-danger">Delete Task</button>
+                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 

@@ -42,13 +42,20 @@ const elements = {
   warmupMessage: document.getElementById("warmup-message"),
   loadingOverlay: document.getElementById("loading-overlay"),
   authTabs: document.querySelectorAll(".auth-tab"),
-  toastContainer: document.getElementById("toast-container"), // <-- FIX: was missing
+  toastContainer: document.getElementById("toast-container"),
+  userEmail: document.getElementById("user-email"),
+  userAvatar: document.getElementById("user-avatar"),
   taskLists: {
     1: document.querySelector("#lane-1 .task-list"),
     2: document.querySelector("#lane-2 .task-list"),
     3: document.querySelector("#lane-3 .task-list")
   },
-  addTaskForms: document.querySelectorAll(".add-task-form")
+  addTaskForms: document.querySelectorAll(".add-task-form"),
+  taskCounts: {
+    1: document.querySelector("#lane-1 .task-count"),
+    2: document.querySelector("#lane-2 .task-count"),
+    3: document.querySelector("#lane-3 .task-count")
+  }
 };
 
 // ==============================
@@ -63,6 +70,9 @@ const auth = firebase.auth();
 auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
+    elements.userEmail.textContent = user.email;
+    elements.userAvatar.textContent = user.email.charAt(0).toUpperCase();
+    
     try {
       await loadTasks();
       showBoard();
@@ -127,7 +137,6 @@ function setupAuthListeners() {
       const provider = new firebase.auth.GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
       await auth.signInWithPopup(provider);
-      // If popup blocked or domain not authorized, Firebase throws → caught below → toast.
     } catch (error) {
       showToast(error.message || "Google sign-in failed", "error");
       console.error(error);
@@ -254,6 +263,11 @@ function renderBoard() {
     else tasksByColumn.other.push(t);
   });
 
+  // Update task counts
+  elements.taskCounts[1].textContent = `${tasksByColumn[1].length} task${tasksByColumn[1].length !== 1 ? 's' : ''}`;
+  elements.taskCounts[2].textContent = `${tasksByColumn[2].length} task${tasksByColumn[2].length !== 1 ? 's' : ''}`;
+  elements.taskCounts[3].textContent = `${tasksByColumn[3].length} task${tasksByColumn[3].length !== 1 ? 's' : ''}`;
+
   for (const [columnId, tasks] of Object.entries(tasksByColumn)) {
     if (columnId === "other") continue;
     const list = elements.taskLists[columnId];
@@ -303,7 +317,7 @@ function createTaskCard(task) {
   if (task.dueDate) {
     const due = document.createElement("div");
     due.className = "task-meta";
-    due.textContent = `Due: ${formatDate(task.dueDate)}`;
+    due.innerHTML = `<i class="far fa-calendar-alt"></i> Due: ${formatDate(task.dueDate)}`;
     card.appendChild(due);
   }
 
