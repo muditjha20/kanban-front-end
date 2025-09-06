@@ -174,20 +174,33 @@ function setupAuthListeners() {
   });
 
   // Google sign-in
-  elements.googleSignIn.addEventListener("click", async () => {
-    try {
-      showLoading(true);
-      const provider = new firebase.auth.GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: "select_account" });
-      await auth.signInWithPopup(provider);
+  elements.googleSignIn.addEventListener("click", () => {
+  // Keep this a pure click handler with no awaits before opening the popup
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+
+  auth.signInWithPopup(provider)
+    .then(() => {
       showToast("Signed in with Google!", "success");
-    } catch (error) {
-      showToast("Google sign-in failed", "error");
-      console.error(error);
-    } finally {
-      showLoading(false);
-    }
-  });
+    })
+    .catch((error) => {
+      console.error("Google sign-in error:", error);
+      const code = error && error.code ? error.code : "unknown";
+      const msg  = error && error.message ? error.message : "Sign-in failed";
+
+      if (code === "auth/popup-blocked" || code === "auth/popup-closed-by-user") {
+        showToast("Popup blocked/closed. Switching to redirect sign-in…", "warning");
+        return auth.signInWithRedirect(provider);
+      }
+      if (code === "auth/unauthorized-domain") {
+        showToast("Unauthorized domain. Add your site in Firebase Auth → Settings → Authorized domains.", "error");
+      } else if (code === "auth/operation-not-allowed") {
+        showToast("Google sign-in is disabled in Firebase. Enable it in Auth → Sign-in method.", "error");
+      } else {
+        showToast(code + ": " + msg, "error");
+      }
+    });
+});
 
   // Logout
   elements.logoutBtn.addEventListener("click", async () => {
@@ -466,7 +479,9 @@ function setupDragAndDrop() {
 // ==============================
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
-  
+
+  // IMPORTANT: align with index.html IDs
+  // id/title/descriptions
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
   document.getElementById("task-description").value = task ? (task.description || "") : "";
