@@ -1,9 +1,10 @@
+
 // ==============================
 // Configuration
 // ==============================
 const API_BASE = "https://kanban-backend-2vbh.onrender.com";
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBrVS_wy5r0If2By4FZSQQq5furnciiJGY",
+  apiKey: "AIzaSyBrVS_w5r0If2By4FZSQQq5furnciiJGY",
   authDomain: "kanbanboardapp-62dbe.firebaseapp.com",
   projectId: "kanbanboardapp-62dbe",
   storageBucket: "kanbanboardapp-62dbe.firebasestorage.app",
@@ -46,20 +47,21 @@ const elements = {
   toastContainer: document.getElementById("toast-container"),
   userEmail: document.getElementById("user-email"),
   userAvatar: document.getElementById("user-avatar"),
+  // Lanes
   taskLists: {
     1: document.querySelector("#lane-1 .task-list"),
     2: document.querySelector("#lane-2 .task-list"),
-    3: document.querySelector("#lane-3 .task-list")
+    3: document.querySelector("#lane-3 .task-list"),
   },
   addTaskForms: document.querySelectorAll(".add-task-form"),
   taskCounts: {
     1: document.querySelector("#lane-1 .task-count"),
     2: document.querySelector("#lane-2 .task-count"),
-    3: document.querySelector("#lane-3 .task-count")
+    3: document.querySelector("#lane-3 .task-count"),
   }
 };
 
-const userInfoContainer = elements.logoutBtn ? elements.logoutBtn.closest('.user-info') : null;
+const userInfoContainer = elements.logoutBtn ? elements.logoutBtn.closest(".user-info") : null;
 
 // ==============================
 // Firebase init (compat SDK loaded in index.html)
@@ -73,14 +75,11 @@ const auth = firebase.auth();
 auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
-    // Fill header UI
     if (elements.userEmail) elements.userEmail.textContent = user.email || "";
     if (elements.userAvatar) elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase();
-    // Show user-info & logout
     if (userInfoContainer) userInfoContainer.classList.remove("hidden");
     if (elements.logoutBtn) elements.logoutBtn.classList.remove("hidden");
 
-    // Show the board immediately so it doesn't look like nothing happened
     showBoard();
     try {
       await loadTasks();
@@ -90,7 +89,6 @@ auth.onAuthStateChanged(async (user) => {
     }
   } else {
     state.currentUser = null;
-    // Hide user-info & logout
     if (userInfoContainer) userInfoContainer.classList.add("hidden");
     if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
     showAuth();
@@ -98,21 +96,56 @@ auth.onAuthStateChanged(async (user) => {
 });
 
 // ==============================
-// Auth listeners
+// UI helpers
+// ==============================
+function showAuth() {
+  elements.authSection.classList.remove("hidden");
+  elements.boardSection.classList.add("hidden");
+  elements.loadingOverlay.classList.add("hidden"); // ensure no loading overlay pre-login
+  elements.warmupMessage?.classList.add("hidden");
+}
+function showBoard() {
+  elements.authSection.classList.add("hidden");
+  elements.boardSection.classList.remove("hidden");
+}
+
+// Toast
+function showToast(message, type = "info") {
+  if (!elements.toastContainer) {
+    const c = document.createElement("div");
+    c.id = "toast-container";
+    c.className = "toast-container";
+    document.body.appendChild(c);
+    elements.toastContainer = c;
+  }
+  const toast = document.createElement("div");
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `<span>${message}</span><button aria-label="Close">&times;</button>`;
+  toast.querySelector("button").onclick = () => toast.remove();
+  elements.toastContainer.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+function showLoading(show) {
+  elements.loadingOverlay.classList.toggle("hidden", !show);
+}
+
+// ==============================
+// Auth wiring
 // ==============================
 function setupAuthListeners() {
   // Login
   elements.loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const email = document.getElementById("login-email").value;
+    const email = document.getElementById("login-email").value.trim();
     const password = document.getElementById("login-password").value;
     try {
       showLoading(true);
       await auth.signInWithEmailAndPassword(email, password);
-      document.getElementById("login-error").textContent = "";
+      showToast("Logged in successfully!", "success");
     } catch (error) {
       document.getElementById("login-error").textContent = error.message;
-      showToast(error.message, "error");
+      showToast(error.message || "Login failed", "error");
     } finally {
       showLoading(false);
     }
@@ -121,36 +154,35 @@ function setupAuthListeners() {
   // Register
   elements.registerForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const email = document.getElementById("register-email").value;
+    const email = document.getElementById("register-email").value.trim();
     const password = document.getElementById("register-password").value;
-    const confirm = document.getElementById("register-confirm").value;
-
+    const confirm = document.getElementById("register-confirm-password").value;
     if (password !== confirm) {
       document.getElementById("register-error").textContent = "Passwords do not match";
       return;
     }
-
     try {
       showLoading(true);
       await auth.createUserWithEmailAndPassword(email, password);
-      document.getElementById("register-error").textContent = "";
+      showToast("Account created successfully! You are now signed in.", "success");
     } catch (error) {
       document.getElementById("register-error").textContent = error.message;
-      showToast(error.message, "error");
+      showToast(error.message || "Registration failed", "error");
     } finally {
       showLoading(false);
     }
   });
 
-  // Google Sign-In
+  // Google sign-in
   elements.googleSignIn.addEventListener("click", async () => {
     try {
       showLoading(true);
       const provider = new firebase.auth.GoogleAuthProvider();
       provider.setCustomParameters({ prompt: "select_account" });
       await auth.signInWithPopup(provider);
+      showToast("Signed in with Google!", "success");
     } catch (error) {
-      showToast(error.message || "Google sign-in failed", "error");
+      showToast("Google sign-in failed", "error");
       console.error(error);
     } finally {
       showLoading(false);
@@ -183,16 +215,16 @@ function setupAuthListeners() {
 // API Fetch helper
 // ==============================
 async function apiFetch(path, options = {}) {
-  // warmup banner if slow
+  // show a small warmup message if server is cold
   if (!state.isServerWarmingUp && !options.isRetry) {
     const warmupTimer = setTimeout(() => {
       state.isServerWarmingUp = true;
-      elements.warmupMessage.classList.remove("hidden");
+      elements.warmupMessage?.classList.remove("hidden");
     }, 1500);
     options.onComplete = () => {
       clearTimeout(warmupTimer);
       state.isServerWarmingUp = false;
-      elements.warmupMessage.classList.add("hidden");
+      elements.warmupMessage?.classList.add("hidden");
     };
   }
 
@@ -226,9 +258,9 @@ async function apiFetch(path, options = {}) {
     state.tokenRefreshAttempted = false;
     return response.status === 204 ? null : response.json();
   } catch (error) {
-    if (options.onComplete) options.onComplete();
+    if (options.onComplete) options.onComplete?.();
     if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
-      elements.corsWarning.classList.remove("hidden");
+      elements.corsWarning?.classList.remove("hidden");
     }
     throw error;
   }
@@ -303,83 +335,12 @@ async function deleteTask(id) {
 }
 
 // ==============================
-// Drag & Drop
+/** Utility */
 // ==============================
-function setupDragAndDrop() {
-  document.querySelectorAll(".task").forEach((card) => {
-    card.setAttribute("draggable", "true");
-  });
-
-  document.addEventListener("dragstart", (e) => {
-    const card = e.target.closest(".task");
-    if (!card) return;
-    e.dataTransfer.effectAllowed = "move";
-    state.dragData = {
-      id: card.dataset.id,
-      from: parseInt(card.dataset.status, 10)
-    };
-    card.classList.add("dragging");
-  });
-
-  document.addEventListener("dragend", (e) => {
-    const card = e.target.closest(".task");
-    if (card) card.classList.remove("dragging");
-    state.dragData = null;
-  });
-
-  document.querySelectorAll(".task-list").forEach((list) => {
-    list.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      list.classList.add("drag-over");
-    });
-    list.addEventListener("dragleave", () => list.classList.remove("drag-over"));
-    list.addEventListener("drop", async (e) => {
-      e.preventDefault();
-      list.classList.remove("drag-over");
-      const toStatus = parseInt(list.dataset.status, 10);
-      if (!state.dragData) return;
-      const { id, from } = state.dragData;
-      if (from === toStatus) return;
-
-      try {
-        await updateTask(id, { columnId: toStatus });
-        showToast("Task moved.", "success");
-      } catch (error) {
-        showToast("Failed to move task.", "error");
-      }
-    });
-  });
-}
-
-// ==============================
-// UI helpers
-// ==============================
-function showAuth() {
-  elements.authSection.classList.remove("hidden");
-  elements.boardSection.classList.add("hidden");
-}
-function showBoard() {
-  elements.authSection.classList.add("hidden");
-  elements.boardSection.classList.remove("hidden");
-}
-function showLoading(show) {
-  elements.loadingOverlay.classList.toggle("hidden", !show);
-}
-function showToast(message, type = "info") {
-  // Guard: if container missing, create it (saves you from silent crashes)
-  if (!elements.toastContainer) {
-    const c = document.createElement("div");
-    c.id = "toast-container";
-    c.className = "toast-container";
-    document.body.appendChild(c);
-    elements.toastContainer = c;
-  }
-  const toast = document.createElement("div");
-  toast.className = `toast toast-${type}`;
-  toast.innerHTML = `<span>${message}</span><button aria-label="Close">&times;</button>`;
-  toast.querySelector("button").onclick = () => toast.remove();
-  elements.toastContainer.appendChild(toast);
-  setTimeout(() => toast.remove(), 5000);
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>\"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
 }
 
 // ==============================
@@ -407,14 +368,52 @@ function renderBoard() {
       card.className = "task";
       card.dataset.id = t.id;
       card.dataset.status = t.columnId;
+
+      const due = t.dueDate ? new Date(t.dueDate) : null;
+      const dueStr = due ? due.toLocaleDateString() + " " + due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+
       card.innerHTML = `
         <div class="task-title">${escapeHtml(t.title)}</div>
         <div class="task-meta">
           <span>${t.priority || "Normal"}</span>
-          ${t.dueDate ? `<span>${new Date(t.dueDate).toLocaleDateString()}</span>` : ""}
+          ${due ? `<span>${escapeHtml(dueStr)}</span>` : ""}
+        </div>
+        <div class="task-actions">
+          <button class="btn-icon edit-btn" title="Edit"><i class="fas fa-pen"></i></button>
+          ${t.columnId === 3
+            ? `<button class="btn-icon reopen-btn" title="Reopen"><i class="fas fa-rotate-left"></i></button>`
+            : `<button class="btn-icon complete-btn" title="Mark as Completed"><i class="fas fa-check"></i></button>`}
+          <button class="btn-icon delete-btn" title="Delete"><i class="fas fa-trash"></i></button>
         </div>
       `;
-      card.addEventListener("click", () => openEditModal(t));
+
+      // actions
+      card.querySelector(".edit-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openEditModal(t);
+      });
+      card.querySelector(".delete-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (confirm("Delete this task?")) await deleteTask(t.id);
+      });
+      const completeBtn = card.querySelector(".complete-btn");
+      if (completeBtn) {
+        completeBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await updateTask(t.id, { ...t, columnId: 3, isDone: true });
+          showToast("Moved to Completed.", "success");
+        });
+      }
+      const reopenBtn = card.querySelector(".reopen-btn");
+      if (reopenBtn) {
+        reopenBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await updateTask(t.id, { ...t, columnId: 1, isDone: false });
+          showToast("Reopened to Active.", "success");
+        });
+      }
+
+      // make draggable
       card.setAttribute("draggable", "true");
       list.appendChild(card);
     });
@@ -423,10 +422,43 @@ function renderBoard() {
   setupDragAndDrop();
 }
 
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
+// ==============================
+// Drag & Drop
+// ==============================
+function setupDragAndDrop() {
+  document.querySelectorAll(".task").forEach((card) => {
+    card.setAttribute("draggable", "true");
+  });
+
+  document.querySelectorAll(".task").forEach((card) => {
+    card.addEventListener("dragstart", (e) => {
+      state.dragData = {
+        id: card.dataset.id,
+        from: parseInt(card.dataset.status, 10)
+      };
+      e.dataTransfer.effectAllowed = "move";
+    });
+  });
+
+  document.querySelectorAll(".task-list").forEach((list) => {
+    list.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      list.classList.add("drag-over");
+    });
+    list.addEventListener("dragleave", () => list.classList.remove("drag-over"));
+    list.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      list.classList.remove("drag-over");
+      const newCol = parseInt(list.getAttribute("data-status"), 10);
+      const id = state.dragData?.id;
+      if (!id || !newCol) return;
+      const t = state.tasks.find((x) => String(x.id) === String(id));
+      if (!t) return;
+      await updateTask(t.id, { ...t, columnId: newCol, isDone: newCol === 3 });
+      showToast("Task moved.", "success");
+    });
+  });
 }
 
 // ==============================
@@ -434,25 +466,47 @@ function escapeHtml(s) {
 // ==============================
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
+
+  // IMPORTANT: align with index.html IDs
+  // id/title/descriptions
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
-  document.getElementById("task-desc").value = task ? (task.description || "") : "";
-  document.getElementById("task-priority").value = task ? (task.priority || "Normal") : "Normal";
-  document.getElementById("task-status").value = task ? (task.columnId || 1) : 1;
-  document.getElementById("task-due").value = task && task.dueDate ? new Date(task.dueDate).toISOString().slice(0, 10) : "";
-  elements.taskDelete.classList.toggle("hidden", !task);
+  document.getElementById("task-description").value = task ? (task.description || "") : "";
+
+  // optional fields that exist in HTML
+  const tagsEl = document.getElementById("task-tags");
+  if (tagsEl) tagsEl.value = task && task.tags ? task.tags.join(", ") : "";
+
+  const dueEl = document.getElementById("task-dueDate");
+  if (dueEl) {
+    if (task && task.dueDate) {
+      // Ensure toLocal datetime format
+      const d = new Date(task.dueDate);
+      const pad = (n) => String(n).padStart(2, "0");
+      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      dueEl.value = local;
+    } else {
+      dueEl.value = "";
+    }
+  }
+
+  const statusEl = document.getElementById("task-columnId");
+  if (statusEl) statusEl.value = task ? (task.columnId || 1) : 1;
+
+  const doneEl = document.getElementById("task-isDone");
+  if (doneEl) doneEl.checked = !!(task && (task.columnId === 3 || task.isDone));
 }
+
 function closeModal() {
   elements.taskModal.classList.add("hidden");
 }
 
 // ==============================
-// Add inline "quick add" forms
+// Init / Wire-up
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
     const input = form.querySelector("input[type='text']");
-    const button = form.querySelector("button[type='submit']");
     const columnId = parseInt(form.dataset.status, 10);
 
     form.addEventListener("submit", async (e) => {
@@ -467,7 +521,7 @@ function wireQuickAddForms() {
           priority: "Normal",
           columnId,
           dueDate: null,
-          isDone: false
+          isDone: columnId === 3
         });
         input.value = "";
       } catch (err) {
@@ -476,20 +530,17 @@ function wireQuickAddForms() {
         showLoading(false);
       }
     });
+
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        button.click();
+        form.dispatchEvent(new Event("submit"));
       }
     });
   });
 }
 
-// ==============================
-// Init
-// ==============================
 function init() {
-  // Ensure signed-out header is hidden by default
   if (userInfoContainer) userInfoContainer.classList.add("hidden");
   if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
 
@@ -499,34 +550,51 @@ function init() {
   elements.refreshBtn.addEventListener("click", () => loadTasks());
   elements.addTaskBtn.addEventListener("click", () => openEditModal());
   elements.modalClose.addEventListener("click", closeModal);
-
   elements.taskModal.addEventListener("click", (e) => {
     if (e.target === elements.taskModal) closeModal();
   });
 
+  // Task form submit (Save)
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
-    const taskData = {
-      title: document.getElementById("task-title").value.trim(),
-      description: document.getElementById("task-desc").value.trim(),
-      priority: document.getElementById("task-priority").value,
-      columnId: parseInt(document.getElementById("task-status").value, 10),
-      dueDate: document.getElementById("task-due").value ? new Date(document.getElementById("task-due").value).toISOString() : null,
-      isDone: false
-    };
+    const title = document.getElementById("task-title").value.trim();
+    const description = document.getElementById("task-description").value.trim();
+    const statusEl = document.getElementById("task-columnId");
+    const doneEl = document.getElementById("task-isDone");
+    const dueEl = document.getElementById("task-dueDate");
+    const tagsEl = document.getElementById("task-tags");
 
-    if (!taskData.title) {
+    // If checkbox is checked => Completed column
+    const isDoneChecked = doneEl ? doneEl.checked : false;
+    const selectedColumn = statusEl ? parseInt(statusEl.value, 10) : 1;
+    const columnId = isDoneChecked ? 3 : selectedColumn;
+
+    const dueDate = (dueEl && dueEl.value) ? new Date(dueEl.value).toISOString() : null;
+    const tags = (tagsEl && tagsEl.value.trim())
+      ? tagsEl.value.split(",").map(s => s.trim()).filter(Boolean)
+      : [];
+
+    if (!title) {
       showToast("Title is required.", "warning");
       return;
     }
 
+    const base = {
+      title,
+      description,
+      columnId,
+      isDone: columnId === 3,
+      dueDate
+    };
+    if (tagsEl) base.tags = tags;
+
     try {
       if (taskId) {
-        await updateTask(taskId, taskData);
+        await updateTask(taskId, base);
         showToast("Task updated!", "success");
       } else {
-        await createTask(taskData);
+        await createTask(base);
       }
       closeModal();
     } catch (error) {
@@ -535,12 +603,15 @@ function init() {
     }
   });
 
+  // Delete (from modal)
   elements.taskDelete.addEventListener("click", async () => {
     const id = document.getElementById("task-id").value;
     if (!id) return;
     try {
-      await deleteTask(id);
-      closeModal();
+      if (confirm("Delete this task?")) {
+        await deleteTask(id);
+        closeModal();
+      }
     } catch (error) {
       showToast("Failed to delete.", "error");
     }
