@@ -4,7 +4,7 @@
 // ==============================
 const API_BASE = "https://kanban-backend-2vbh.onrender.com";
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBrVS_w5r0If2By4FZSQQq5furnciiJGY",
+  apiKey: "AIzaSyBrVS_wy5r0If2By4FZSQQq5furnciiJGY",
   authDomain: "kanbanboardapp-62dbe.firebaseapp.com",
   projectId: "kanbanboardapp-62dbe",
   storageBucket: "kanbanboardapp-62dbe.firebasestorage.app",
@@ -466,9 +466,7 @@ function setupDragAndDrop() {
 // ==============================
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
-
-  // IMPORTANT: align with index.html IDs
-  // id/title/descriptions
+  
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
   document.getElementById("task-description").value = task ? (task.description || "") : "";
