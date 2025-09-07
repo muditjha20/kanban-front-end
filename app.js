@@ -25,7 +25,7 @@ const state = {
 };
 
 // ==============================
-// DOM
+/** DOM */
 // ==============================
 const elements = {
   authSection: document.getElementById("auth-section"),
@@ -47,7 +47,6 @@ const elements = {
   toastContainer: document.getElementById("toast-container"),
   userEmail: document.getElementById("user-email"),
   userAvatar: document.getElementById("user-avatar"),
-  // Lanes
   taskLists: {
     1: document.querySelector("#lane-1 .task-list"),
     2: document.querySelector("#lane-2 .task-list"),
@@ -64,13 +63,13 @@ const elements = {
 const userInfoContainer = elements.logoutBtn ? elements.logoutBtn.closest(".user-info") : null;
 
 // ==============================
-// Firebase init (compat SDK loaded in index.html)
+// Firebase init
 // ==============================
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
 
 // ==============================
-// Auth state observer
+// Auth observer
 // ==============================
 auth.onAuthStateChanged(async (user) => {
   if (user) {
@@ -84,7 +83,7 @@ auth.onAuthStateChanged(async (user) => {
     try {
       await loadTasks();
     } catch (err) {
-      showToast("You're signed in, but tasks couldn't load yet. Try Refresh.", "warning");
+      showToast("Signed in, but tasks couldn't load yet. Try Refresh.", "warning");
       console.error(err);
     }
   } else {
@@ -101,15 +100,13 @@ auth.onAuthStateChanged(async (user) => {
 function showAuth() {
   elements.authSection.classList.remove("hidden");
   elements.boardSection.classList.add("hidden");
-  elements.loadingOverlay.classList.add("hidden"); // ensure no loading overlay pre-login
+  elements.loadingOverlay.classList.add("hidden"); // prevent overlay pre-login
   elements.warmupMessage?.classList.add("hidden");
 }
 function showBoard() {
   elements.authSection.classList.add("hidden");
   elements.boardSection.classList.remove("hidden");
 }
-
-// Toast
 function showToast(message, type = "info") {
   if (!elements.toastContainer) {
     const c = document.createElement("div");
@@ -125,7 +122,6 @@ function showToast(message, type = "info") {
   elements.toastContainer.appendChild(toast);
   setTimeout(() => toast.remove(), 5000);
 }
-
 function showLoading(show) {
   elements.loadingOverlay.classList.toggle("hidden", !show);
 }
@@ -173,34 +169,32 @@ function setupAuthListeners() {
     }
   });
 
-  // Google sign-in
+  // Google sign-in (pure click handler; no awaits before popup)
   elements.googleSignIn.addEventListener("click", () => {
-  // Keep this a pure click handler with no awaits before opening the popup
-  const provider = new firebase.auth.GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: "select_account" });
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    auth.signInWithPopup(provider)
+      .then(() => {
+        showToast("Signed in with Google!", "success");
+      })
+      .catch((error) => {
+        console.error("Google sign-in error:", error);
+        const code = error && error.code ? error.code : "unknown";
+        const msg  = error && error.message ? error.message : "Sign-in failed";
 
-  auth.signInWithPopup(provider)
-    .then(() => {
-      showToast("Signed in with Google!", "success");
-    })
-    .catch((error) => {
-      console.error("Google sign-in error:", error);
-      const code = error && error.code ? error.code : "unknown";
-      const msg  = error && error.message ? error.message : "Sign-in failed";
-
-      if (code === "auth/popup-blocked" || code === "auth/popup-closed-by-user") {
-        showToast("Popup blocked/closed. Switching to redirect sign-in…", "warning");
-        return auth.signInWithRedirect(provider);
-      }
-      if (code === "auth/unauthorized-domain") {
-        showToast("Unauthorized domain. Add your site in Firebase Auth → Settings → Authorized domains.", "error");
-      } else if (code === "auth/operation-not-allowed") {
-        showToast("Google sign-in is disabled in Firebase. Enable it in Auth → Sign-in method.", "error");
-      } else {
-        showToast(code + ": " + msg, "error");
-      }
-    });
-});
+        if (code === "auth/popup-blocked" || code === "auth/popup-closed-by-user") {
+          showToast("Popup blocked/closed. Switching to redirect sign-in…", "warning");
+          return auth.signInWithRedirect(provider);
+        }
+        if (code === "auth/unauthorized-domain") {
+          showToast("Unauthorized domain. Add your site in Firebase Auth → Settings → Authorized domains.", "error");
+        } else if (code === "auth/operation-not-allowed") {
+          showToast("Google sign-in is disabled in Firebase. Enable it in Auth → Sign-in method.", "error");
+        } else {
+          showToast(code + ": " + msg, "error");
+        }
+      });
+  });
 
   // Logout
   elements.logoutBtn.addEventListener("click", async () => {
@@ -212,7 +206,7 @@ function setupAuthListeners() {
     }
   });
 
-  // Auth tabs
+  // Tabs
   elements.authTabs.forEach((tab) => {
     tab.addEventListener("click", () => {
       const tabName = tab.getAttribute("data-tab");
@@ -225,10 +219,9 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API Fetch helper
+// API fetch
 // ==============================
 async function apiFetch(path, options = {}) {
-  // show a small warmup message if server is cold
   if (!state.isServerWarmingUp && !options.isRetry) {
     const warmupTimer = setTimeout(() => {
       state.isServerWarmingUp = true;
@@ -256,7 +249,6 @@ async function apiFetch(path, options = {}) {
 
     if (options.onComplete) options.onComplete();
 
-    // handle token expiration once
     if (response.status === 401 && !state.tokenRefreshAttempted && auth.currentUser) {
       state.tokenRefreshAttempted = true;
       await auth.currentUser.getIdToken(true);
@@ -299,16 +291,30 @@ async function loadTasks() {
 async function createTask(task) {
   showLoading(true);
   try {
+    const clean = {
+      title: task.title || "",
+      description: task.description || "",
+      columnId: Number(task.columnId) || 1,
+      isDone: !!task.isDone,
+      dueDate: task.dueDate || null
+    };
     const created = await apiFetch("/api/Tasks", {
       method: "POST",
-      body: task
+      body: { dto: clean }
     });
     state.tasks.push(created);
     renderBoard();
     showToast("Task created!", "success");
   } catch (error) {
-    showToast("Failed to create task.", "error");
-    console.error(error);
+    try {
+      const msg = JSON.parse(error.message.replace(/^HTTP \\d+:\\s*/, ""));
+      console.error("Create validation:", msg);
+      if (msg && msg.errors) showToast("Create failed: " + Object.keys(msg.errors).join(", "), "error");
+      else showToast("Failed to create task.", "error");
+    } catch {
+      showToast("Failed to create task.", "error");
+      console.error(error);
+    }
   } finally {
     showLoading(false);
   }
@@ -317,16 +323,30 @@ async function createTask(task) {
 async function updateTask(id, updates) {
   showLoading(true);
   try {
+    const clean = {
+      title: updates.title || "",
+      description: updates.description || "",
+      columnId: Number(updates.columnId) || 1,
+      isDone: !!updates.isDone,
+      dueDate: updates.dueDate || null
+    };
     const updated = await apiFetch(`/api/Tasks/${id}`, {
       method: "PUT",
-      body: updates
+      body: { dto: clean }
     });
     const idx = state.tasks.findIndex((t) => t.id === id);
     if (idx !== -1) state.tasks[idx] = updated;
     renderBoard();
   } catch (error) {
-    showToast("Failed to update task.", "error");
-    console.error(error);
+    try {
+      const msg = JSON.parse(error.message.replace(/^HTTP \\d+:\\s*/, ""));
+      console.error("Update validation:", msg);
+      if (msg && msg.errors) showToast("Update failed: " + Object.keys(msg.errors).join(", "), "error");
+      else showToast("Failed to update task.", "error");
+    } catch {
+      showToast("Failed to update task.", "error");
+      console.error(error);
+    }
   } finally {
     showLoading(false);
   }
@@ -348,7 +368,7 @@ async function deleteTask(id) {
 }
 
 // ==============================
-/** Utility */
+// Utils
 // ==============================
 function escapeHtml(s) {
   return (s || "").replace(/[&<>\"']/g, (c) => ({
@@ -360,15 +380,14 @@ function escapeHtml(s) {
 // Rendering
 // ==============================
 function renderBoard() {
-  // Clear lists
   [1, 2, 3].forEach((id) => {
     elements.taskLists[id].innerHTML = "";
   });
 
   const byCol = { 1: [], 2: [], 3: [] };
   state.tasks.forEach((t) => {
-    const col = byCol[t.columnId] || byCol[1];
-    col.push(t);
+    const key = t.columnId || (t.isDone ? 3 : 1);
+    (byCol[key] || byCol[1]).push(t);
   });
 
   [1, 2, 3].forEach((id) => {
@@ -388,19 +407,18 @@ function renderBoard() {
       card.innerHTML = `
         <div class="task-title">${escapeHtml(t.title)}</div>
         <div class="task-meta">
-          <span>${t.priority || "Normal"}</span>
+          ${t.priority ? `<span>${escapeHtml(t.priority)}</span>` : ""}
           ${due ? `<span>${escapeHtml(dueStr)}</span>` : ""}
         </div>
         <div class="task-actions">
           <button class="btn-icon edit-btn" title="Edit"><i class="fas fa-pen"></i></button>
-          ${t.columnId === 3
+          ${Number(t.columnId) === 3 || t.isDone
             ? `<button class="btn-icon reopen-btn" title="Reopen"><i class="fas fa-rotate-left"></i></button>`
             : `<button class="btn-icon complete-btn" title="Mark as Completed"><i class="fas fa-check"></i></button>`}
           <button class="btn-icon delete-btn" title="Delete"><i class="fas fa-trash"></i></button>
         </div>
       `;
 
-      // actions
       card.querySelector(".edit-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         openEditModal(t);
@@ -426,7 +444,6 @@ function renderBoard() {
         });
       }
 
-      // make draggable
       card.setAttribute("draggable", "true");
       list.appendChild(card);
     });
@@ -441,16 +458,20 @@ function renderBoard() {
 function setupDragAndDrop() {
   document.querySelectorAll(".task").forEach((card) => {
     card.setAttribute("draggable", "true");
-  });
-
-  document.querySelectorAll(".task").forEach((card) => {
     card.addEventListener("dragstart", (e) => {
       state.dragData = {
         id: card.dataset.id,
         from: parseInt(card.dataset.status, 10)
       };
       e.dataTransfer.effectAllowed = "move";
+      card.classList.add("dragging");
     });
+  });
+
+  document.addEventListener("dragend", (e) => {
+    const card = e.target.closest(".task");
+    if (card) card.classList.remove("dragging");
+    state.dragData = null;
   });
 
   document.querySelectorAll(".task-list").forEach((list) => {
@@ -475,25 +496,21 @@ function setupDragAndDrop() {
 }
 
 // ==============================
-// Modal
+// Modal open/close
 // ==============================
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
 
-  // IMPORTANT: align with index.html IDs
-  // id/title/descriptions
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
   document.getElementById("task-description").value = task ? (task.description || "") : "";
 
-  // optional fields that exist in HTML
   const tagsEl = document.getElementById("task-tags");
   if (tagsEl) tagsEl.value = task && task.tags ? task.tags.join(", ") : "";
 
   const dueEl = document.getElementById("task-dueDate");
   if (dueEl) {
     if (task && task.dueDate) {
-      // Ensure toLocal datetime format
       const d = new Date(task.dueDate);
       const pad = (n) => String(n).padStart(2, "0");
       const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -515,12 +532,12 @@ function closeModal() {
 }
 
 // ==============================
-// Init / Wire-up
+// Init wiring
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
     const input = form.querySelector("input[type='text']");
-    const columnId = parseInt(form.dataset.status, 10);
+    const columnId = Number(form.dataset.status);
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -531,7 +548,6 @@ function wireQuickAddForms() {
         await createTask({
           title,
           description: "",
-          priority: "Normal",
           columnId,
           dueDate: null,
           isDone: columnId === 3
@@ -567,7 +583,6 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
-  // Task form submit (Save)
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
@@ -576,38 +591,32 @@ function init() {
     const statusEl = document.getElementById("task-columnId");
     const doneEl = document.getElementById("task-isDone");
     const dueEl = document.getElementById("task-dueDate");
-    const tagsEl = document.getElementById("task-tags");
 
-    // If checkbox is checked => Completed column
     const isDoneChecked = doneEl ? doneEl.checked : false;
-    const selectedColumn = statusEl ? parseInt(statusEl.value, 10) : 1;
+    const selectedColumn = statusEl ? Number(statusEl.value) : 1;
     const columnId = isDoneChecked ? 3 : selectedColumn;
 
     const dueDate = (dueEl && dueEl.value) ? new Date(dueEl.value).toISOString() : null;
-    const tags = (tagsEl && tagsEl.value.trim())
-      ? tagsEl.value.split(",").map(s => s.trim()).filter(Boolean)
-      : [];
 
     if (!title) {
       showToast("Title is required.", "warning");
       return;
     }
 
-    const base = {
+    const payload = {
       title,
       description,
       columnId,
       isDone: columnId === 3,
       dueDate
     };
-    if (tagsEl) base.tags = tags;
 
     try {
       if (taskId) {
-        await updateTask(taskId, base);
+        await updateTask(taskId, payload);
         showToast("Task updated!", "success");
       } else {
-        await createTask(base);
+        await createTask(payload);
       }
       closeModal();
     } catch (error) {
@@ -616,7 +625,6 @@ function init() {
     }
   });
 
-  // Delete (from modal)
   elements.taskDelete.addEventListener("click", async () => {
     const id = document.getElementById("task-id").value;
     if (!id) return;
