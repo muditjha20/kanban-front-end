@@ -20,8 +20,7 @@ const state = {
   tasks: [],
   isServerWarmingUp: false,
   tokenRefreshAttempted: false,
-  // for optimistic DnD revert
-  lastDrag: null,
+  lastDrag: null, // for optimistic DnD revert
 };
 
 // ==============================
@@ -62,7 +61,7 @@ const elements = {
 };
 
 // ==============================
-// Firebase (compat)
+// Firebase (compat SDK)
 // ==============================
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -216,7 +215,7 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API fetch (tolerates empty success bodies)
+// API fetch (tolerates empty 2xx bodies)
 // ==============================
 async function apiFetch(path, options = {}) {
   // warmup hint for Render cold start
@@ -258,13 +257,12 @@ async function apiFetch(path, options = {}) {
       throw new Error(`HTTP ${response.status}: ${msg}`);
     }
 
-    // ---- critical: allow empty 2xx bodies ----
+    // allow empty body successes
     const text = await response.text();
     if (!text || !text.trim()) return null;
     try {
       return JSON.parse(text);
     } catch {
-      // if backend returns text/plain or empty JSON, still treat as success
       return null;
     }
   } catch (error) {
@@ -277,14 +275,45 @@ async function apiFetch(path, options = {}) {
 }
 
 // ==============================
+// Client-side Task Meta (persisted locally)
+// ==============================
+const META_KEY = "task_meta_v1";
+function loadMeta() {
+  try { return JSON.parse(localStorage.getItem(META_KEY) || "{}"); }
+  catch { return {}; }
+}
+function saveMeta(id, meta) {
+  const all = loadMeta();
+  const next = { ...(all[String(id)] || {}), ...(meta || {}) };
+  // strip empty/null so we don't store junk
+  Object.keys(next).forEach((k) => { if (next[k] === "" || next[k] == null) delete next[k]; });
+  all[String(id)] = next;
+  localStorage.setItem(META_KEY, JSON.stringify(all));
+}
+function deleteMeta(id) {
+  const all = loadMeta();
+  if (all[String(id)]) {
+    delete all[String(id)];
+    localStorage.setItem(META_KEY, JSON.stringify(all));
+  }
+}
+function applyMeta(task) {
+  const m = loadMeta()[String(task.id)];
+  return m ? { ...task, ...m } : task;
+}
+function mergeMetaIntoTasks(tasks) {
+  const all = loadMeta();
+  return tasks.map((t) => (all[String(t.id)] ? { ...t, ...all[String(t.id)] } : t));
+}
+
+// ==============================
 // Helpers
 // ==============================
 function normalizeTask(t) {
   if (!t) return null;
   const id = t.id ?? t.Id ?? null;
   if (id == null) return null;
-  const columnId =
-    Number(t.columnId ?? t.ColumnId ?? (t.isDone ? 3 : 1)) || 1;
+  const columnId = Number(t.columnId ?? t.ColumnId ?? (t.isDone ? 3 : 1)) || 1;
   return {
     ...t,
     id: String(id),
@@ -296,22 +325,20 @@ function replaceTask(id, newTaskLike) {
   const idx = state.tasks.findIndex((x) => String(x?.id) === String(id));
   if (idx !== -1) {
     const merged = normalizeTask({ ...state.tasks[idx], ...newTaskLike });
-    if (merged) state.tasks[idx] = merged;
+    if (merged) state.tasks[idx] = applyMeta(merged);
   }
   state.tasks = state.tasks.filter(Boolean);
 }
 
 // ==============================
-// CRUD (mirror TS shapes & endpoints)
+// CRUD
 // ==============================
 async function loadTasks() {
-  showLoading(true);
+  showLoading(true); // keep overlay ONLY for full loads/refresh
   try {
     const data = await apiFetch("/api/tasks");
-    const tasks = Array.isArray(data)
-      ? data.map(normalizeTask).filter(Boolean)
-      : [];
-    state.tasks = tasks;
+    const tasks = Array.isArray(data) ? data.map(normalizeTask).filter(Boolean) : [];
+    state.tasks = mergeMetaIntoTasks(tasks);
     renderBoard();
   } catch (error) {
     showToast("Failed to load tasks.", "error");
@@ -321,8 +348,19 @@ async function loadTasks() {
   }
 }
 
+// refresh without overlay (used after empty POST responses)
+async function refreshTasksNoOverlay() {
+  try {
+    const data = await apiFetch("/api/tasks");
+    const tasks = Array.isArray(data) ? data.map(normalizeTask).filter(Boolean) : [];
+    state.tasks = mergeMetaIntoTasks(tasks);
+    renderBoard();
+  } catch (error) {
+    console.error("Background refresh failed:", error);
+  }
+}
+
 async function createTask(task) {
-  showLoading(true);
   try {
     const body = {
       title: (task.title || "").trim(),
@@ -333,17 +371,18 @@ async function createTask(task) {
       dueDate: task.dueDate ?? null,
     };
 
-    const created = await apiFetch("/api/tasks", {
-      method: "POST",
-      body,
-    });
+    const created = await apiFetch("/api/tasks", { method: "POST", body });
 
     if (created) {
       const norm = normalizeTask(created);
-      if (norm) state.tasks.push(norm);
+      if (norm) {
+        // persist client-only fields
+        saveMeta(norm.id, { description: body.description, tags: body.tags, dueDate: body.dueDate });
+        state.tasks.push(applyMeta(norm));
+      }
     } else {
-      // if backend returns empty, fetch fresh
-      await loadTasks();
+      // backend returned empty; soft refresh (no overlay)
+      await refreshTasksNoOverlay();
     }
     renderBoard();
     showToast("Task created!", "success");
@@ -351,44 +390,38 @@ async function createTask(task) {
   } catch (error) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
-      console.error("Create validation:", msg);
-      if (msg && msg.errors) {
-        const fields = Object.keys(msg.errors).join(", ");
-        showToast("Create failed: " + fields, "error");
-      } else {
-        showToast("Failed to create task.", "error");
-      }
-    } catch {
-      showToast("Failed to create task.", "error");
-      console.error(error);
-    }
+      if (msg && msg.errors) showToast("Create failed: " + Object.keys(msg.errors).join(", "), "error");
+      else showToast("Failed to create task.", "error");
+    } catch { showToast("Failed to create task.", "error"); }
+    console.error(error);
     return false;
-  } finally {
-    showLoading(false);
   }
 }
 
 async function updateTask(id, updates) {
-  // We do NOT optimistically change here (DnD handles that).
-  showLoading(true);
   try {
+    // server only needs these; client meta saved separately
     const body = {
       title: (updates.title || "").trim(),
       isDone: !!updates.isDone,
       columnId: Number(updates.columnId) || 1,
     };
 
-    const resp = await apiFetch(`/api/tasks/${id}`, {
-      method: "PUT",
-      body,
-    });
+    const resp = await apiFetch(`/api/tasks/${id}`, { method: "PUT", body });
+
+    // save client-only fields regardless of server behavior
+    const metaPatch = {};
+    if ("description" in updates) metaPatch.description = updates.description ?? "";
+    if ("tags" in updates)        metaPatch.tags = updates.tags ?? "";
+    if ("dueDate" in updates)     metaPatch.dueDate = updates.dueDate ?? null;
+    if (Object.keys(metaPatch).length) saveMeta(id, metaPatch);
 
     if (resp) {
       const norm = normalizeTask(resp);
       if (norm) replaceTask(id, norm);
     } else {
-      // empty body success → merge our updates locally
-      replaceTask(id, body);
+      // empty success → merge locally
+      replaceTask(id, { id, ...body, ...metaPatch });
     }
 
     renderBoard();
@@ -396,27 +429,18 @@ async function updateTask(id, updates) {
   } catch (error) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
-      console.error("Update validation:", msg);
-      if (msg && msg.errors) {
-        const fields = Object.keys(msg.errors).join(", ");
-        showToast("Update failed: " + fields, "error");
-      } else {
-        showToast("Failed to update task.", "error");
-      }
-    } catch {
-      showToast("Failed to update task.", "error");
-      console.error(error);
-    }
+      if (msg && msg.errors) showToast("Update failed: " + Object.keys(msg.errors).join(", "), "error");
+      else showToast("Failed to update task.", "error");
+    } catch { showToast("Failed to update task.", "error"); }
+    console.error(error);
     return false;
-  } finally {
-    showLoading(false);
   }
 }
 
 async function deleteTask(id) {
-  showLoading(true);
   try {
     await apiFetch(`/api/tasks/${id}`, { method: "DELETE" });
+    deleteMeta(id);
     state.tasks = state.tasks.filter((t) => String(t?.id) !== String(id));
     renderBoard();
     showToast("Task deleted.", "success");
@@ -425,8 +449,6 @@ async function deleteTask(id) {
     showToast("Failed to delete task.", "error");
     console.error(error);
     return false;
-  } finally {
-    showLoading(false);
   }
 }
 
@@ -506,7 +528,7 @@ function renderBoard() {
 }
 
 // ==============================
-// Drag & Drop (optimistic with revert)
+// Drag & Drop (optimistic with revert; no overlay)
 // ==============================
 function setupDragAndDrop() {
   document.querySelectorAll(".task-card").forEach((card) => {
@@ -514,10 +536,7 @@ function setupDragAndDrop() {
     card.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "move";
       card.classList.add("dragging");
-      state.lastDrag = {
-        id: card.dataset.id,
-        from: Number(card.dataset.status) || 1,
-      };
+      state.lastDrag = { id: card.dataset.id, from: Number(card.dataset.status) || 1 };
     });
   });
 
@@ -545,12 +564,12 @@ function setupDragAndDrop() {
       const task = state.tasks.find((x) => String(x?.id) === String(id));
       if (!task) return;
 
-      // optimistic update
+      // optimistic local move
       const prev = { columnId: task.columnId, isDone: task.isDone };
       replaceTask(id, { columnId: to, isDone: to === 3 });
       renderBoard();
 
-      // server update
+      // server call
       const ok = await updateTask(id, {
         title: task.title,
         columnId: to,
@@ -575,34 +594,30 @@ function setupDragAndDrop() {
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
 
+  const meta = task ? loadMeta()[String(task.id)] || {} : {};
+
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
-  document.getElementById("task-description").value = task ? task.description || "" : "";
+  document.getElementById("task-description").value =
+    meta.description ?? task?.description ?? "";
 
   const tagsEl = document.getElementById("task-tags");
-  if (tagsEl)
-    tagsEl.value = task && task.tags
-      ? Array.isArray(task.tags)
-        ? task.tags.join(", ")
-        : task.tags
-      : "";
+  if (tagsEl) tagsEl.value = meta.tags ?? task?.tags ?? "";
 
   const dueEl = document.getElementById("task-dueDate");
   if (dueEl) {
-    if (task && task.dueDate) {
-      const d = new Date(task.dueDate);
+    const src = meta.dueDate ?? task?.dueDate ?? null;
+    if (src) {
+      const d = new Date(src);
       const pad = (n) => String(n).padStart(2, "0");
-      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-        d.getHours()
-      )}:${pad(d.getMinutes())}`;
-      dueEl.value = local;
+      dueEl.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     } else {
       dueEl.value = "";
     }
   }
 
   const statusEl = document.getElementById("task-columnId");
-  if (statusEl) statusEl.value = task ? Number(task.columnId) || 1 : 1;
+  if (statusEl) statusEl.value = task ? (Number(task.columnId) || 1) : 1;
 
   const doneEl = document.getElementById("task-isDone");
   if (doneEl) doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
@@ -625,7 +640,6 @@ function wireQuickAddForms() {
     const submitNew = async () => {
       const title = (input.value || "").trim();
       if (!title) return;
-      showLoading(true);
       const ok = await createTask({
         title,
         description: "",
@@ -634,19 +648,12 @@ function wireQuickAddForms() {
         dueDate: null,
         isDone: columnId === 3,
       }).catch(console.error);
-      showLoading(false);
       if (ok) input.value = "";
     };
 
-    btn?.addEventListener("click", (e) => {
-      e.preventDefault();
-      submitNew();
-    });
+    btn?.addEventListener("click", (e) => { e.preventDefault(); submitNew(); });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        submitNew();
-      }
+      if (e.key === "Enter") { e.preventDefault(); submitNew(); }
     });
   });
 }
@@ -664,34 +671,25 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
+  // Modal save (includes client meta fields)
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
     const title = (document.getElementById("task-title").value || "").trim();
     const description = (document.getElementById("task-description").value || "").trim();
+    const tags = (document.getElementById("task-tags")?.value || "").trim();
+    const dueVal = document.getElementById("task-dueDate")?.value || "";
     const statusEl = document.getElementById("task-columnId");
     const doneEl = document.getElementById("task-isDone");
-    const dueEl = document.getElementById("task-dueDate");
 
-    if (!title) {
-      showToast("Title is required.", "warning");
-      return;
-    }
+    if (!title) { showToast("Title is required.", "warning"); return; }
 
     const selectedColumn = statusEl ? Number(statusEl.value) : 1;
     const isDoneChecked = doneEl ? !!doneEl.checked : false;
     const columnId = isDoneChecked ? 3 : selectedColumn;
-    const dueDate =
-      dueEl && dueEl.value ? new Date(dueEl.value).toISOString() : null;
+    const dueDate = dueVal ? new Date(dueVal).toISOString() : null;
 
-    const payload = {
-      title,
-      isDone: columnId === 3,
-      columnId,
-      description,
-      tags: document.getElementById("task-tags")?.value || "",
-      dueDate,
-    };
+    const payload = { title, isDone: columnId === 3, columnId, description, tags, dueDate };
 
     let ok = false;
     if (taskId) {
