@@ -1,4 +1,3 @@
-
 // ==============================
 // Configuration
 // ==============================
@@ -10,7 +9,7 @@ const FIREBASE_CONFIG = {
   storageBucket: "kanbanboardapp-62dbe.firebasestorage.app",
   messagingSenderId: "489531772022",
   appId: "1:489531772022:web:681402f74a7dbc0917a357",
-  measurementId: "G-0W2YCG3NQJ"
+  measurementId: "G-0W2YCG3NQJ",
 };
 
 // ==============================
@@ -21,7 +20,7 @@ const state = {
   tasks: [],
   dragData: null,
   isServerWarmingUp: false,
-  tokenRefreshAttempted: false
+  tokenRefreshAttempted: false,
 };
 
 // ==============================
@@ -47,7 +46,7 @@ const elements = {
   toastContainer: document.getElementById("toast-container"),
   userEmail: document.getElementById("user-email"),
   userAvatar: document.getElementById("user-avatar"),
-  // Lanes
+  userInfo: document.getElementById("user-info"),
   taskLists: {
     1: document.querySelector("#lane-1 .task-list"),
     2: document.querySelector("#lane-2 .task-list"),
@@ -58,13 +57,11 @@ const elements = {
     1: document.querySelector("#lane-1 .task-count"),
     2: document.querySelector("#lane-2 .task-count"),
     3: document.querySelector("#lane-3 .task-count"),
-  }
+  },
 };
 
-const userInfoContainer = elements.logoutBtn ? elements.logoutBtn.closest(".user-info") : null;
-
 // ==============================
-// Firebase init
+// Firebase (compat SDKs loaded in index.html)
 // ==============================
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -76,9 +73,12 @@ auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
     if (elements.userEmail) elements.userEmail.textContent = user.email || "";
-    if (elements.userAvatar) elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase();
-    if (userInfoContainer) userInfoContainer.classList.remove("hidden");
-    if (elements.logoutBtn) elements.logoutBtn.classList.remove("hidden");
+    if (elements.userAvatar)
+      elements.userAvatar.textContent = (user.email || "U")
+        .charAt(0)
+        .toUpperCase();
+    elements.userInfo?.classList.remove("hidden");
+    elements.logoutBtn?.classList.remove("hidden");
 
     showBoard();
     try {
@@ -89,8 +89,8 @@ auth.onAuthStateChanged(async (user) => {
     }
   } else {
     state.currentUser = null;
-    if (userInfoContainer) userInfoContainer.classList.add("hidden");
-    if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
+    elements.userInfo?.classList.add("hidden");
+    elements.logoutBtn?.classList.add("hidden");
     showAuth();
   }
 });
@@ -101,7 +101,7 @@ auth.onAuthStateChanged(async (user) => {
 function showAuth() {
   elements.authSection.classList.remove("hidden");
   elements.boardSection.classList.add("hidden");
-  elements.loadingOverlay.classList.add("hidden"); // prevent overlay pre-login
+  elements.loadingOverlay.classList.add("hidden"); // no overlay before login
   elements.warmupMessage?.classList.add("hidden");
 }
 function showBoard() {
@@ -126,12 +126,23 @@ function showToast(message, type = "info") {
 function showLoading(show) {
   elements.loadingOverlay.classList.toggle("hidden", !show);
 }
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>\"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+}
+const getColIdFromEl = (el) => {
+  const col = el.closest(".column");
+  if (!col || !col.id) return 1;
+  const n = Number(col.id.split("-")[1]);
+  return Number.isFinite(n) ? n : 1;
+};
 
 // ==============================
 // Auth wiring
 // ==============================
 function setupAuthListeners() {
-  // Email/password login
+  // Login
   elements.loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = document.getElementById("login-email").value.trim();
@@ -148,14 +159,15 @@ function setupAuthListeners() {
     }
   });
 
-  // Register
+  // Register (note: confirm input id is 'register-confirm')
   elements.registerForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = document.getElementById("register-email").value.trim();
     const password = document.getElementById("register-password").value;
-    const confirm = document.getElementById("register-confirm-password").value;
+    const confirm = document.getElementById("register-confirm").value;
     if (password !== confirm) {
-      document.getElementById("register-error").textContent = "Passwords do not match";
+      document.getElementById("register-error").textContent =
+        "Passwords do not match";
       return;
     }
     try {
@@ -170,30 +182,21 @@ function setupAuthListeners() {
     }
   });
 
-  // Google sign-in (pure click handler; no awaits before popup)
+  // Google sign-in (pure click; no awaits before popup)
   elements.googleSignIn.addEventListener("click", () => {
     const provider = new firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
-    auth.signInWithPopup(provider)
-      .then(() => {
-        showToast("Signed in with Google!", "success");
-      })
+    auth
+      .signInWithPopup(provider)
+      .then(() => showToast("Signed in with Google!", "success"))
       .catch((error) => {
         console.error("Google sign-in error:", error);
-        const code = error && error.code ? error.code : "unknown";
-        const msg  = error && error.message ? error.message : "Sign-in failed";
-
+        const code = error?.code || "unknown";
         if (code === "auth/popup-blocked" || code === "auth/popup-closed-by-user") {
-          showToast("Popup blocked/closed. Switching to redirect sign-in…", "warning");
+          showToast("Popup blocked/closed. Switching to redirect…", "warning");
           return auth.signInWithRedirect(provider);
         }
-        if (code === "auth/unauthorized-domain") {
-          showToast("Unauthorized domain. Add your site in Firebase Auth → Settings → Authorized domains.", "error");
-        } else if (code === "auth/operation-not-allowed") {
-          showToast("Google sign-in is disabled in Firebase. Enable it in Auth → Sign-in method.", "error");
-        } else {
-          showToast(code + ": " + msg, "error");
-        }
+        showToast(`${code}: ${error?.message || "Sign-in failed"}`, "error");
       });
   });
 
@@ -220,9 +223,10 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API Fetch
+// API fetch (flat camelCase bodies, like the TS client)
 // ==============================
 async function apiFetch(path, options = {}) {
+  // soft warmup hint (Render cold start)
   if (!state.isServerWarmingUp && !options.isRetry) {
     const warmupTimer = setTimeout(() => {
       state.isServerWarmingUp = true;
@@ -243,9 +247,9 @@ async function apiFetch(path, options = {}) {
       method: options.method || "GET",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {})
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: options.body ? JSON.stringify(options.body) : undefined
+      body: options.body ? JSON.stringify(options.body) : undefined,
     });
 
     if (options.onComplete) options.onComplete();
@@ -265,7 +269,10 @@ async function apiFetch(path, options = {}) {
     return response.status === 204 ? null : response.json();
   } catch (error) {
     if (options.onComplete) options.onComplete?.();
-    if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
+    if (
+      error.message.includes("Failed to fetch") ||
+      error.message.includes("NetworkError")
+    ) {
       elements.corsWarning?.classList.remove("hidden");
     }
     throw error;
@@ -273,12 +280,12 @@ async function apiFetch(path, options = {}) {
 }
 
 // ==============================
-// CRUD
+// CRUD (mirror TS shapes & endpoints)
 // ==============================
 async function loadTasks() {
   showLoading(true);
   try {
-    const data = await apiFetch("/api/Tasks");
+    const data = await apiFetch("/api/tasks");
     state.tasks = Array.isArray(data) ? data : [];
     renderBoard();
   } catch (error) {
@@ -292,19 +299,20 @@ async function loadTasks() {
 async function createTask(task) {
   showLoading(true);
   try {
-    const dto = {
-      Title: task.title || "",
-      Description: task.description || "",
-      ColumnId: Number(task.columnId) || 1,
-      IsDone: !!task.isDone
+    const body = {
+      title: (task.title || "").trim(),
+      isDone: !!task.isDone,
+      columnId: Number(task.columnId) || 1,
+      description: task.description ?? "",
+      tags: task.tags ?? "",
+      dueDate: task.dueDate ?? null,
     };
-    if (task.dueDate) dto.DueDate = task.dueDate;
-    if (!dto.Description) delete dto.Description;
 
-    const created = await apiFetch("/api/Tasks", {
+    const created = await apiFetch("/api/tasks", {
       method: "POST",
-      body: { dto }
+      body,
     });
+
     state.tasks.push(created);
     renderBoard();
     showToast("Task created!", "success");
@@ -312,8 +320,12 @@ async function createTask(task) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
       console.error("Create validation:", msg);
-      if (msg && msg.errors) showToast("Create failed: " + Object.keys(msg.errors).join(", "), "error");
-      else showToast("Failed to create task.", "error");
+      if (msg && msg.errors) {
+        const fields = Object.keys(msg.errors).join(", ");
+        showToast("Create failed: " + fields, "error");
+      } else {
+        showToast("Failed to create task.", "error");
+      }
     } catch {
       showToast("Failed to create task.", "error");
       console.error(error);
@@ -326,28 +338,31 @@ async function createTask(task) {
 async function updateTask(id, updates) {
   showLoading(true);
   try {
-    const dto = {
-      Title: updates.title || "",
-      Description: updates.description || "",
-      ColumnId: Number(updates.columnId) || 1,
-      IsDone: !!updates.isDone
+    // TS update sends only these three
+    const body = {
+      title: (updates.title || "").trim(),
+      isDone: !!updates.isDone,
+      columnId: Number(updates.columnId) || 1,
     };
-    if (updates.dueDate) dto.DueDate = updates.dueDate;
-    if (!dto.Description) delete dto.Description;
 
-    const updated = await apiFetch(`/api/Tasks/${id}`, {
+    const updated = await apiFetch(`/api/tasks/${id}`, {
       method: "PUT",
-      body: { dto }
+      body,
     });
-    const idx = state.tasks.findIndex((t) => t.id === id);
+
+    const idx = state.tasks.findIndex((t) => String(t.id) === String(id));
     if (idx !== -1) state.tasks[idx] = updated;
     renderBoard();
   } catch (error) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
       console.error("Update validation:", msg);
-      if (msg && msg.errors) showToast("Update failed: " + Object.keys(msg.errors).join(", "), "error");
-      else showToast("Failed to update task.", "error");
+      if (msg && msg.errors) {
+        const fields = Object.keys(msg.errors).join(", ");
+        showToast("Update failed: " + fields, "error");
+      } else {
+        showToast("Failed to update task.", "error");
+      }
     } catch {
       showToast("Failed to update task.", "error");
       console.error(error);
@@ -360,8 +375,8 @@ async function updateTask(id, updates) {
 async function deleteTask(id) {
   showLoading(true);
   try {
-    await apiFetch(`/api/Tasks/${id}`, { method: "DELETE" });
-    state.tasks = state.tasks.filter((t) => t.id !== id);
+    await apiFetch(`/api/tasks/${id}`, { method: "DELETE" });
+    state.tasks = state.tasks.filter((t) => String(t.id) !== String(id));
     renderBoard();
     showToast("Task deleted.", "success");
   } catch (error) {
@@ -373,21 +388,10 @@ async function deleteTask(id) {
 }
 
 // ==============================
-// Utils
-// ==============================
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>\"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  }[c]));
-}
-
-// ==============================
 // Rendering
 // ==============================
 function renderBoard() {
-  [1, 2, 3].forEach((id) => {
-    elements.taskLists[id].innerHTML = "";
-  });
+  [1, 2, 3].forEach((id) => (elements.taskLists[id].innerHTML = ""));
 
   const byCol = { 1: [], 2: [], 3: [] };
   state.tasks.forEach((t) => {
@@ -398,7 +402,7 @@ function renderBoard() {
   [1, 2, 3].forEach((id) => {
     const list = elements.taskLists[id];
     const tasks = byCol[id] || [];
-    elements.taskCounts[id].textContent = tasks.length;
+    elements.taskCounts[id].textContent = `${tasks.length} tasks`;
 
     tasks.forEach((t) => {
       const card = document.createElement("div");
@@ -407,19 +411,25 @@ function renderBoard() {
       card.dataset.status = t.columnId;
 
       const due = t.dueDate ? new Date(t.dueDate) : null;
-      const dueStr = due ? due.toLocaleDateString() + " " + due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      const dueStr =
+        due &&
+        `${due.toLocaleDateString()} ${due.toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        })}`;
 
       card.innerHTML = `
         <div class="task-title">${escapeHtml(t.title)}</div>
         <div class="task-meta">
-          ${t.priority ? `<span>${escapeHtml(t.priority)}</span>` : ""}
           ${due ? `<span>${escapeHtml(dueStr)}</span>` : ""}
         </div>
         <div class="task-actions">
           <button class="btn-icon edit-btn" title="Edit"><i class="fas fa-pen"></i></button>
-          ${Number(t.columnId) === 3 || t.isDone
-            ? `<button class="btn-icon reopen-btn" title="Reopen"><i class="fas fa-rotate-left"></i></button>`
-            : `<button class="btn-icon complete-btn" title="Mark as Completed"><i class="fas fa-check"></i></button>`}
+          ${
+            Number(t.columnId) === 3 || t.isDone
+              ? `<button class="btn-icon reopen-btn" title="Reopen"><i class="fas fa-rotate-left"></i></button>`
+              : `<button class="btn-icon complete-btn" title="Mark as Completed"><i class="fas fa-check"></i></button>`
+          }
           <button class="btn-icon delete-btn" title="Delete"><i class="fas fa-trash"></i></button>
         </div>
       `;
@@ -450,7 +460,7 @@ function renderBoard() {
       }
 
       card.setAttribute("draggable", "true");
-      elements.taskLists[id].appendChild(card);
+      list.appendChild(card);
     });
   });
 
@@ -466,7 +476,7 @@ function setupDragAndDrop() {
     card.addEventListener("dragstart", (e) => {
       state.dragData = {
         id: card.dataset.id,
-        from: parseInt(card.dataset.status, 10)
+        from: Number(card.dataset.status) || 1,
       };
       e.dataTransfer.effectAllowed = "move";
       card.classList.add("dragging");
@@ -489,7 +499,7 @@ function setupDragAndDrop() {
     list.addEventListener("drop", async (e) => {
       e.preventDefault();
       list.classList.remove("drag-over");
-      const newCol = parseInt(list.getAttribute("data-status"), 10);
+      const newCol = getColIdFromEl(list);
       const id = state.dragData?.id;
       if (!id || !newCol) return;
       const t = state.tasks.find((x) => String(x.id) === String(id));
@@ -508,17 +518,21 @@ function openEditModal(task = null) {
 
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
-  document.getElementById("task-description").value = task ? (task.description || "") : "";
+  document.getElementById("task-description").value = task
+    ? task.description || ""
+    : "";
 
   const tagsEl = document.getElementById("task-tags");
-  if (tagsEl) tagsEl.value = task && task.tags ? task.tags.join(", ") : "";
+  if (tagsEl) tagsEl.value = task && task.tags ? task.tags : "";
 
   const dueEl = document.getElementById("task-dueDate");
   if (dueEl) {
     if (task && task.dueDate) {
       const d = new Date(task.dueDate);
       const pad = (n) => String(n).padStart(2, "0");
-      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+        d.getDate()
+      )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       dueEl.value = local;
     } else {
       dueEl.value = "";
@@ -526,10 +540,10 @@ function openEditModal(task = null) {
   }
 
   const statusEl = document.getElementById("task-columnId");
-  if (statusEl) statusEl.value = task ? (task.columnId || 1) : 1;
+  if (statusEl) statusEl.value = task ? Number(task.columnId) || 1 : 1;
 
   const doneEl = document.getElementById("task-isDone");
-  if (doneEl) doneEl.checked = !!(task && (task.columnId === 3 || task.isDone));
+  if (doneEl) doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
 }
 
 function closeModal() {
@@ -543,24 +557,21 @@ function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
     const input = form.querySelector("input[type='text']");
     const btn = form.querySelector("button");
-    let columnId = Number(form.dataset.status);
-    if (!columnId) {
-      const lane = form.closest(".column");
-      const list = lane ? lane.querySelector(".task-list") : null;
-      columnId = list ? Number(list.getAttribute("data-status")) : 1;
-    }
+
+    const columnId = getColIdFromEl(form);
 
     const submitNew = async () => {
-      const title = input.value.trim();
+      const title = (input.value || "").trim();
       if (!title) return;
       try {
         showLoading(true);
         await createTask({
           title,
           description: "",
+          tags: "",
           columnId,
           dueDate: null,
-          isDone: columnId === 3
+          isDone: columnId === 3,
         });
         input.value = "";
       } catch (err) {
@@ -576,7 +587,6 @@ function wireQuickAddForms() {
         submitNew();
       });
     }
-
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -587,8 +597,8 @@ function wireQuickAddForms() {
 }
 
 function init() {
-  if (userInfoContainer) userInfoContainer.classList.add("hidden");
-  if (elements.logoutBtn) elements.logoutBtn.classList.add("hidden");
+  elements.userInfo?.classList.add("hidden");
+  elements.logoutBtn?.classList.add("hidden");
 
   setupAuthListeners();
   setupDragAndDrop();
@@ -600,32 +610,33 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
+  // Modal save → mirror TS payload
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
-    const title = document.getElementById("task-title").value.trim();
-    const description = document.getElementById("task-description").value.trim();
+    const title = (document.getElementById("task-title").value || "").trim();
+    const description = (document.getElementById("task-description").value || "").trim();
     const statusEl = document.getElementById("task-columnId");
     const doneEl = document.getElementById("task-isDone");
     const dueEl = document.getElementById("task-dueDate");
-
-    const isDoneChecked = doneEl ? doneEl.checked : false;
-    const selectedColumn = statusEl ? Number(statusEl.value) : 1;
-    const columnId = isDoneChecked ? 3 : selectedColumn;
-
-    const dueDate = (dueEl && dueEl.value) ? new Date(dueEl.value).toISOString() : null;
 
     if (!title) {
       showToast("Title is required.", "warning");
       return;
     }
 
+    const selectedColumn = statusEl ? Number(statusEl.value) : 1;
+    const isDoneChecked = doneEl ? !!doneEl.checked : false;
+    const columnId = isDoneChecked ? 3 : selectedColumn;
+    const dueDate = (dueEl && dueEl.value) ? new Date(dueEl.value).toISOString() : null;
+
     const payload = {
       title,
-      description,
-      columnId,
       isDone: columnId === 3,
-      dueDate
+      columnId,
+      description,
+      tags: "",
+      dueDate,
     };
 
     try {
