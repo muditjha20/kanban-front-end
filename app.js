@@ -25,7 +25,7 @@ const state = {
 };
 
 // ==============================
-/** DOM */
+// DOM
 // ==============================
 const elements = {
   authSection: document.getElementById("auth-section"),
@@ -47,6 +47,7 @@ const elements = {
   toastContainer: document.getElementById("toast-container"),
   userEmail: document.getElementById("user-email"),
   userAvatar: document.getElementById("user-avatar"),
+  // Lanes
   taskLists: {
     1: document.querySelector("#lane-1 .task-list"),
     2: document.querySelector("#lane-2 .task-list"),
@@ -130,7 +131,7 @@ function showLoading(show) {
 // Auth wiring
 // ==============================
 function setupAuthListeners() {
-  // Login
+  // Email/password login
   elements.loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = document.getElementById("login-email").value.trim();
@@ -219,7 +220,7 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API fetch
+// API Fetch
 // ==============================
 async function apiFetch(path, options = {}) {
   if (!state.isServerWarmingUp && !options.isRetry) {
@@ -291,23 +292,25 @@ async function loadTasks() {
 async function createTask(task) {
   showLoading(true);
   try {
-    const clean = {
-      title: task.title || "",
-      description: task.description || "",
-      columnId: Number(task.columnId) || 1,
-      isDone: !!task.isDone,
-      dueDate: task.dueDate || null
+    const dto = {
+      Title: task.title || "",
+      Description: task.description || "",
+      ColumnId: Number(task.columnId) || 1,
+      IsDone: !!task.isDone
     };
+    if (task.dueDate) dto.DueDate = task.dueDate;
+    if (!dto.Description) delete dto.Description;
+
     const created = await apiFetch("/api/Tasks", {
       method: "POST",
-      body: { dto: clean }
+      body: { dto }
     });
     state.tasks.push(created);
     renderBoard();
     showToast("Task created!", "success");
   } catch (error) {
     try {
-      const msg = JSON.parse(error.message.replace(/^HTTP \\d+:\\s*/, ""));
+      const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
       console.error("Create validation:", msg);
       if (msg && msg.errors) showToast("Create failed: " + Object.keys(msg.errors).join(", "), "error");
       else showToast("Failed to create task.", "error");
@@ -323,23 +326,25 @@ async function createTask(task) {
 async function updateTask(id, updates) {
   showLoading(true);
   try {
-    const clean = {
-      title: updates.title || "",
-      description: updates.description || "",
-      columnId: Number(updates.columnId) || 1,
-      isDone: !!updates.isDone,
-      dueDate: updates.dueDate || null
+    const dto = {
+      Title: updates.title || "",
+      Description: updates.description || "",
+      ColumnId: Number(updates.columnId) || 1,
+      IsDone: !!updates.isDone
     };
+    if (updates.dueDate) dto.DueDate = updates.dueDate;
+    if (!dto.Description) delete dto.Description;
+
     const updated = await apiFetch(`/api/Tasks/${id}`, {
       method: "PUT",
-      body: { dto: clean }
+      body: { dto }
     });
     const idx = state.tasks.findIndex((t) => t.id === id);
     if (idx !== -1) state.tasks[idx] = updated;
     renderBoard();
   } catch (error) {
     try {
-      const msg = JSON.parse(error.message.replace(/^HTTP \\d+:\\s*/, ""));
+      const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
       console.error("Update validation:", msg);
       if (msg && msg.errors) showToast("Update failed: " + Object.keys(msg.errors).join(", "), "error");
       else showToast("Failed to update task.", "error");
@@ -386,7 +391,7 @@ function renderBoard() {
 
   const byCol = { 1: [], 2: [], 3: [] };
   state.tasks.forEach((t) => {
-    const key = t.columnId || (t.isDone ? 3 : 1);
+    const key = Number(t.columnId) || (t.isDone ? 3 : 1);
     (byCol[key] || byCol[1]).push(t);
   });
 
@@ -445,7 +450,7 @@ function renderBoard() {
       }
 
       card.setAttribute("draggable", "true");
-      list.appendChild(card);
+      elements.taskLists[id].appendChild(card);
     });
   });
 
@@ -469,7 +474,7 @@ function setupDragAndDrop() {
   });
 
   document.addEventListener("dragend", (e) => {
-    const card = e.target.closest(".task");
+    const card = e.target.closest?.(".task");
     if (card) card.classList.remove("dragging");
     state.dragData = null;
   });
@@ -496,7 +501,7 @@ function setupDragAndDrop() {
 }
 
 // ==============================
-// Modal open/close
+// Modal
 // ==============================
 function openEditModal(task = null) {
   elements.taskModal.classList.remove("hidden");
@@ -532,15 +537,20 @@ function closeModal() {
 }
 
 // ==============================
-// Init wiring
+// Init / Wiring
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
     const input = form.querySelector("input[type='text']");
-    const columnId = Number(form.dataset.status);
+    const btn = form.querySelector("button");
+    let columnId = Number(form.dataset.status);
+    if (!columnId) {
+      const lane = form.closest(".column");
+      const list = lane ? lane.querySelector(".task-list") : null;
+      columnId = list ? Number(list.getAttribute("data-status")) : 1;
+    }
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
+    const submitNew = async () => {
       const title = input.value.trim();
       if (!title) return;
       try {
@@ -558,12 +568,19 @@ function wireQuickAddForms() {
       } finally {
         showLoading(false);
       }
-    });
+    };
+
+    if (btn) {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        submitNew();
+      });
+    }
 
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        form.dispatchEvent(new Event("submit"));
+        submitNew();
       }
     });
   });
