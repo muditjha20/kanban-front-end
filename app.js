@@ -130,7 +130,7 @@ function escapeHtml(s) {
 const getColIdFromEl = (el) => {
   const col = el.closest(".column");
   if (!col || !col.id) return 1;
-  const n = Number(col.id.split("-")[1]);
+  const n = Number(col.id.split("-")[1]); // lane-1 -> 1
   return Number.isFinite(n) ? n : 1;
 };
 
@@ -266,13 +266,39 @@ async function apiFetch(path, options = {}) {
 }
 
 // ==============================
+// Helpers
+// ==============================
+function normalizeTask(t) {
+  if (!t) return null;
+  const id = t.id ?? t.Id ?? null;
+  if (id == null) return null;
+  const columnId = Number(t.columnId ?? t.ColumnId ?? (t.isDone ? 3 : 1)) || 1;
+  return {
+    ...t,
+    id: String(id),
+    columnId,
+    isDone: !!(t.isDone ?? t.IsDone ?? (columnId === 3)),
+  };
+}
+function upsertTaskLocally(id, patch) {
+  // Merge into local state even if server returned 204
+  const idx = state.tasks.findIndex((x) => String(x?.id) === String(id));
+  if (idx === -1) return;
+  const merged = normalizeTask({ ...state.tasks[idx], ...patch });
+  state.tasks[idx] = merged;
+  // prune any accidental nulls
+  state.tasks = state.tasks.filter(Boolean);
+}
+
+// ==============================
 // CRUD (mirror TS shapes & endpoints)
 // ==============================
 async function loadTasks() {
   showLoading(true);
   try {
     const data = await apiFetch("/api/tasks");
-    state.tasks = Array.isArray(data) ? data : [];
+    const tasks = Array.isArray(data) ? data.map(normalizeTask).filter(Boolean) : [];
+    state.tasks = tasks;
     renderBoard();
   } catch (error) {
     showToast("Failed to load tasks.", "error");
@@ -299,9 +325,11 @@ async function createTask(task) {
       body,
     });
 
-    state.tasks.push(created);
+    const norm = normalizeTask(created);
+    if (norm) state.tasks.push(norm);
     renderBoard();
     showToast("Task created!", "success");
+    return true;
   } catch (error) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
@@ -316,6 +344,7 @@ async function createTask(task) {
       showToast("Failed to create task.", "error");
       console.error(error);
     }
+    return false;
   } finally {
     showLoading(false);
   }
@@ -324,20 +353,34 @@ async function createTask(task) {
 async function updateTask(id, updates) {
   showLoading(true);
   try {
+    // TS update sends only these three
     const body = {
       title: (updates.title || "").trim(),
       isDone: !!updates.isDone,
       columnId: Number(updates.columnId) || 1,
     };
 
-    const updated = await apiFetch(`/api/tasks/${id}`, {
+    const resp = await apiFetch(`/api/tasks/${id}`, {
       method: "PUT",
       body,
     });
 
-    const idx = state.tasks.findIndex((t) => String(t.id) === String(id));
-    if (idx !== -1) state.tasks[idx] = updated;
+    if (resp === null) {
+      // 204 or empty body — merge local with updates
+      upsertTaskLocally(id, body);
+    } else {
+      // replace with server version (normalized)
+      const norm = normalizeTask(resp);
+      if (norm) {
+        const idx = state.tasks.findIndex((t) => String(t?.id) === String(id));
+        if (idx !== -1) state.tasks[idx] = norm;
+      }
+    }
+
+    // cleanup + render
+    state.tasks = state.tasks.filter(Boolean);
     renderBoard();
+    return true;
   } catch (error) {
     try {
       const msg = JSON.parse(error.message.replace(/^HTTP \d+:\s*/, ""));
@@ -352,6 +395,7 @@ async function updateTask(id, updates) {
       showToast("Failed to update task.", "error");
       console.error(error);
     }
+    return false;
   } finally {
     showLoading(false);
   }
@@ -361,12 +405,14 @@ async function deleteTask(id) {
   showLoading(true);
   try {
     await apiFetch(`/api/tasks/${id}`, { method: "DELETE" });
-    state.tasks = state.tasks.filter((t) => String(t.id) !== String(id));
+    state.tasks = state.tasks.filter((t) => String(t?.id) !== String(id));
     renderBoard();
     showToast("Task deleted.", "success");
+    return true;
   } catch (error) {
     showToast("Failed to delete task.", "error");
     console.error(error);
+    return false;
   } finally {
     showLoading(false);
   }
@@ -378,8 +424,11 @@ async function deleteTask(id) {
 function renderBoard() {
   [1, 2, 3].forEach((id) => (elements.taskLists[id].innerHTML = ""));
 
+  // Filter out any accidental nulls
+  const safeTasks = state.tasks.filter(Boolean);
+
   const byCol = { 1: [], 2: [], 3: [] };
-  state.tasks.forEach((t) => {
+  safeTasks.forEach((t) => {
     const key = Number(t.columnId) || (t.isDone ? 3 : 1);
     (byCol[key] || byCol[1]).push(t);
   });
@@ -387,7 +436,8 @@ function renderBoard() {
   [1, 2, 3].forEach((id) => {
     const list = elements.taskLists[id];
     const tasks = byCol[id] || [];
-    elements.taskCounts[id].textContent = `${tasks.length} tasks`;
+    // restore original count text (just the number)
+    elements.taskCounts[id].textContent = tasks.length;
 
     tasks.forEach((t) => {
       const card = document.createElement("div");
@@ -395,19 +445,19 @@ function renderBoard() {
       card.dataset.id = t.id;
       card.dataset.status = t.columnId;
 
-      // Title (h4) for styles.css
+      // Title (h4)
       const titleEl = document.createElement("h4");
       titleEl.textContent = t.title || "";
       card.appendChild(titleEl);
 
-      // Description (p) if present
+      // Description (p)
       if (t.description) {
         const desc = document.createElement("p");
         desc.textContent = t.description;
         card.appendChild(desc);
       }
 
-      // Tags row if present (supports string "a,b" or array)
+      // Tags
       const tags = Array.isArray(t.tags)
         ? t.tags
         : (typeof t.tags === "string" ? t.tags.split(",") : []).map(s => s.trim()).filter(Boolean);
@@ -434,7 +484,7 @@ function renderBoard() {
         card.appendChild(meta);
       }
 
-      // Click to edit (original interaction), keep UI clean
+      // Click to edit
       card.addEventListener("click", () => openEditModal(t));
 
       // Draggable
@@ -475,13 +525,18 @@ function setupDragAndDrop() {
     list.addEventListener("drop", async (e) => {
       e.preventDefault();
       list.classList.remove("drag-over");
+
       const newCol = getColIdFromEl(list);
       const id = state.dragData?.id;
       if (!id || !newCol) return;
-      const t = state.tasks.find((x) => String(x.id) === String(id));
+
+      const t = state.tasks.find((x) => String(x?.id) === String(id));
       if (!t) return;
-      await updateTask(t.id, { ...t, columnId: newCol, isDone: newCol === 3 });
-      showToast("Task moved.", "success");
+
+      const ok = await updateTask(t.id, { ...t, columnId: newCol, isDone: newCol === 3 });
+      if (ok) {
+        showToast("Task moved.", "success");
+      } // updateTask already shows errors if not ok
     });
   });
 }
@@ -529,7 +584,8 @@ function closeModal() {
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
-    const input = form.querySelector(".task-title-input");
+    // fall back to any text input if specific class not present
+    const input = form.querySelector(".task-title-input") || form.querySelector("input[type='text']");
     const btn = form.querySelector("button");
     const columnId = getColIdFromEl(form);
 
@@ -538,7 +594,7 @@ function wireQuickAddForms() {
       if (!title) return;
       try {
         showLoading(true);
-        await createTask({
+        const ok = await createTask({
           title,
           description: "",
           tags: "",
@@ -546,7 +602,7 @@ function wireQuickAddForms() {
           dueDate: null,
           isDone: columnId === 3,
         });
-        input.value = "";
+        if (ok) input.value = "";
       } catch (err) {
         console.error(err);
       } finally {
@@ -566,7 +622,6 @@ function init() {
   elements.logoutBtn?.classList.add("hidden");
 
   setupAuthListeners();
-  setupDragAndDrop();
 
   elements.refreshBtn.addEventListener("click", () => loadTasks());
   elements.addTaskBtn.addEventListener("click", () => openEditModal());
@@ -606,10 +661,11 @@ function init() {
 
     try {
       if (taskId) {
-        await updateTask(taskId, payload);
-        showToast("Task updated!", "success");
+        const ok = await updateTask(taskId, payload);
+        if (ok) showToast("Task updated!", "success");
       } else {
-        await createTask(payload);
+        const ok = await createTask(payload);
+        if (ok) showToast("Task created!", "success");
       }
       closeModal();
     } catch (error) {
@@ -632,6 +688,8 @@ function init() {
   });
 
   wireQuickAddForms();
+  // initial DnD bind happens after first render
+  loadTasks();
 }
 
 document.addEventListener("DOMContentLoaded", init);
