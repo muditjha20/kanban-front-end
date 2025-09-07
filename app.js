@@ -21,6 +21,7 @@ const state = {
   isServerWarmingUp: false,
   tokenRefreshAttempted: false,
   lastDrag: null, // for optimistic DnD revert
+  currentEditingTask: null, // <— track the task being edited
 };
 
 // ==============================
@@ -285,7 +286,6 @@ function loadMeta() {
 function saveMeta(id, meta) {
   const all = loadMeta();
   const next = { ...(all[String(id)] || {}), ...(meta || {}) };
-  // strip empty/null so we don't store junk
   Object.keys(next).forEach((k) => { if (next[k] === "" || next[k] == null) delete next[k]; });
   all[String(id)] = next;
   localStorage.setItem(META_KEY, JSON.stringify(all));
@@ -348,7 +348,6 @@ async function loadTasks() {
   }
 }
 
-// refresh without overlay (used after empty POST responses)
 async function refreshTasksNoOverlay() {
   try {
     const data = await apiFetch("/api/tasks");
@@ -376,12 +375,10 @@ async function createTask(task) {
     if (created) {
       const norm = normalizeTask(created);
       if (norm) {
-        // persist client-only fields
         saveMeta(norm.id, { description: body.description, tags: body.tags, dueDate: body.dueDate });
         state.tasks.push(applyMeta(norm));
       }
     } else {
-      // backend returned empty; soft refresh (no overlay)
       await refreshTasksNoOverlay();
     }
     renderBoard();
@@ -409,7 +406,6 @@ async function updateTask(id, updates) {
 
     const resp = await apiFetch(`/api/tasks/${id}`, { method: "PUT", body });
 
-    // save client-only fields regardless of server behavior
     const metaPatch = {};
     if ("description" in updates) metaPatch.description = updates.description ?? "";
     if ("tags" in updates)        metaPatch.tags = updates.tags ?? "";
@@ -420,7 +416,6 @@ async function updateTask(id, updates) {
       const norm = normalizeTask(resp);
       if (norm) replaceTask(id, norm);
     } else {
-      // empty success → merge locally
       replaceTask(id, { id, ...body, ...metaPatch });
     }
 
@@ -592,6 +587,7 @@ function setupDragAndDrop() {
 // Modal
 // ==============================
 function openEditModal(task = null) {
+  state.currentEditingTask = task || null; // store the task being edited
   elements.taskModal.classList.remove("hidden");
 
   const meta = task ? loadMeta()[String(task.id)] || {} : {};
@@ -616,14 +612,24 @@ function openEditModal(task = null) {
     }
   }
 
+  // === Drop the status-changing feature ===
+  // Disable status dropdown and completed checkbox (visual only; ignored on save)
   const statusEl = document.getElementById("task-columnId");
-  if (statusEl) statusEl.value = task ? (Number(task.columnId) || 1) : 1;
-
+  if (statusEl) {
+    statusEl.value = task ? (Number(task.columnId) || 1) : 1;
+    statusEl.disabled = true;
+    statusEl.title = "Status is managed by drag & drop.";
+  }
   const doneEl = document.getElementById("task-isDone");
-  if (doneEl) doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
+  if (doneEl) {
+    doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
+    doneEl.disabled = true;
+    doneEl.title = "Completion is managed by drag & drop.";
+  }
 }
 
 function closeModal() {
+  state.currentEditingTask = null;
   elements.taskModal.classList.add("hidden");
 }
 
@@ -671,7 +677,7 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
-  // Modal save (includes client meta fields)
+  // Modal save — NO status changes; we preserve column
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
@@ -679,17 +685,18 @@ function init() {
     const description = (document.getElementById("task-description").value || "").trim();
     const tags = (document.getElementById("task-tags")?.value || "").trim();
     const dueVal = document.getElementById("task-dueDate")?.value || "";
-    const statusEl = document.getElementById("task-columnId");
-    const doneEl = document.getElementById("task-isDone");
 
     if (!title) { showToast("Title is required.", "warning"); return; }
 
-    const selectedColumn = statusEl ? Number(statusEl.value) : 1;
-    const isDoneChecked = doneEl ? !!doneEl.checked : false;
-    const columnId = isDoneChecked ? 3 : selectedColumn;
+    // Column is preserved. For new tasks, default to Active (1).
+    const currentCol = state.currentEditingTask
+      ? Number(state.currentEditingTask.columnId) || 1
+      : 1;
+    const columnId = currentCol;
+    const isDone = columnId === 3;
     const dueDate = dueVal ? new Date(dueVal).toISOString() : null;
 
-    const payload = { title, isDone: columnId === 3, columnId, description, tags, dueDate };
+    const payload = { title, isDone, columnId, description, tags, dueDate };
 
     let ok = false;
     if (taskId) {
