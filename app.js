@@ -18,9 +18,10 @@ const FIREBASE_CONFIG = {
 const state = {
   currentUser: null,
   tasks: [],
-  dragData: null,
   isServerWarmingUp: false,
   tokenRefreshAttempted: false,
+  // for optimistic DnD revert
+  lastDrag: null,
 };
 
 // ==============================
@@ -73,7 +74,8 @@ auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
     elements.userEmail && (elements.userEmail.textContent = user.email || "");
-    elements.userAvatar && (elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase());
+    elements.userAvatar &&
+      (elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase());
     elements.userInfo?.classList.remove("hidden");
     elements.logoutBtn?.classList.remove("hidden");
     showBoard();
@@ -97,7 +99,7 @@ auth.onAuthStateChanged(async (user) => {
 function showAuth() {
   elements.authSection.classList.remove("hidden");
   elements.boardSection.classList.add("hidden");
-  elements.loadingOverlay.classList.add("hidden"); // no overlay pre-login
+  elements.loadingOverlay.classList.add("hidden");
   elements.warmupMessage?.classList.add("hidden");
 }
 function showBoard() {
@@ -117,7 +119,7 @@ function showToast(message, type = "info") {
   toast.innerHTML = `<span>${message}</span><button aria-label="Close">&times;</button>`;
   toast.querySelector("button").onclick = () => toast.remove();
   elements.toastContainer.appendChild(toast);
-  setTimeout(() => toast.remove(), 5000);
+  setTimeout(() => toast.remove(), 4000);
 }
 function showLoading(show) {
   elements.loadingOverlay.classList.toggle("hidden", !show);
@@ -127,12 +129,12 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
 }
-const getColIdFromEl = (el) => {
+function getColIdFromEl(el) {
   const col = el.closest(".column");
   if (!col || !col.id) return 1;
   const n = Number(col.id.split("-")[1]); // lane-1 -> 1
   return Number.isFinite(n) ? n : 1;
-};
+}
 
 // ==============================
 // Auth wiring
@@ -179,7 +181,8 @@ function setupAuthListeners() {
   elements.googleSignIn.addEventListener("click", () => {
     const provider = new firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
-    auth.signInWithPopup(provider)
+    auth
+      .signInWithPopup(provider)
       .then(() => showToast("Signed in with Google!", "success"))
       .catch((error) => {
         console.error("Google sign-in error:", error);
@@ -213,16 +216,17 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API fetch (flat camelCase bodies, like TS client)
+// API fetch (tolerates empty success bodies)
 // ==============================
 async function apiFetch(path, options = {}) {
+  // warmup hint for Render cold start
   if (!state.isServerWarmingUp && !options.isRetry) {
-    const warmupTimer = setTimeout(() => {
+    const warm = setTimeout(() => {
       state.isServerWarmingUp = true;
       elements.warmupMessage?.classList.remove("hidden");
     }, 1500);
     options.onComplete = () => {
-      clearTimeout(warmupTimer);
+      clearTimeout(warm);
       state.isServerWarmingUp = false;
       elements.warmupMessage?.classList.add("hidden");
     };
@@ -254,8 +258,15 @@ async function apiFetch(path, options = {}) {
       throw new Error(`HTTP ${response.status}: ${msg}`);
     }
 
-    state.tokenRefreshAttempted = false;
-    return response.status === 204 ? null : response.json();
+    // ---- critical: allow empty 2xx bodies ----
+    const text = await response.text();
+    if (!text || !text.trim()) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      // if backend returns text/plain or empty JSON, still treat as success
+      return null;
+    }
   } catch (error) {
     if (options.onComplete) options.onComplete?.();
     if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
@@ -272,7 +283,8 @@ function normalizeTask(t) {
   if (!t) return null;
   const id = t.id ?? t.Id ?? null;
   if (id == null) return null;
-  const columnId = Number(t.columnId ?? t.ColumnId ?? (t.isDone ? 3 : 1)) || 1;
+  const columnId =
+    Number(t.columnId ?? t.ColumnId ?? (t.isDone ? 3 : 1)) || 1;
   return {
     ...t,
     id: String(id),
@@ -280,13 +292,12 @@ function normalizeTask(t) {
     isDone: !!(t.isDone ?? t.IsDone ?? (columnId === 3)),
   };
 }
-function upsertTaskLocally(id, patch) {
-  // Merge into local state even if server returned 204
+function replaceTask(id, newTaskLike) {
   const idx = state.tasks.findIndex((x) => String(x?.id) === String(id));
-  if (idx === -1) return;
-  const merged = normalizeTask({ ...state.tasks[idx], ...patch });
-  state.tasks[idx] = merged;
-  // prune any accidental nulls
+  if (idx !== -1) {
+    const merged = normalizeTask({ ...state.tasks[idx], ...newTaskLike });
+    if (merged) state.tasks[idx] = merged;
+  }
   state.tasks = state.tasks.filter(Boolean);
 }
 
@@ -297,7 +308,9 @@ async function loadTasks() {
   showLoading(true);
   try {
     const data = await apiFetch("/api/tasks");
-    const tasks = Array.isArray(data) ? data.map(normalizeTask).filter(Boolean) : [];
+    const tasks = Array.isArray(data)
+      ? data.map(normalizeTask).filter(Boolean)
+      : [];
     state.tasks = tasks;
     renderBoard();
   } catch (error) {
@@ -325,8 +338,13 @@ async function createTask(task) {
       body,
     });
 
-    const norm = normalizeTask(created);
-    if (norm) state.tasks.push(norm);
+    if (created) {
+      const norm = normalizeTask(created);
+      if (norm) state.tasks.push(norm);
+    } else {
+      // if backend returns empty, fetch fresh
+      await loadTasks();
+    }
     renderBoard();
     showToast("Task created!", "success");
     return true;
@@ -351,9 +369,9 @@ async function createTask(task) {
 }
 
 async function updateTask(id, updates) {
+  // We do NOT optimistically change here (DnD handles that).
   showLoading(true);
   try {
-    // TS update sends only these three
     const body = {
       title: (updates.title || "").trim(),
       isDone: !!updates.isDone,
@@ -365,20 +383,14 @@ async function updateTask(id, updates) {
       body,
     });
 
-    if (resp === null) {
-      // 204 or empty body — merge local with updates
-      upsertTaskLocally(id, body);
-    } else {
-      // replace with server version (normalized)
+    if (resp) {
       const norm = normalizeTask(resp);
-      if (norm) {
-        const idx = state.tasks.findIndex((t) => String(t?.id) === String(id));
-        if (idx !== -1) state.tasks[idx] = norm;
-      }
+      if (norm) replaceTask(id, norm);
+    } else {
+      // empty body success → merge our updates locally
+      replaceTask(id, body);
     }
 
-    // cleanup + render
-    state.tasks = state.tasks.filter(Boolean);
     renderBoard();
     return true;
   } catch (error) {
@@ -424,8 +436,7 @@ async function deleteTask(id) {
 function renderBoard() {
   [1, 2, 3].forEach((id) => (elements.taskLists[id].innerHTML = ""));
 
-  // Filter out any accidental nulls
-  const safeTasks = state.tasks.filter(Boolean);
+  const safeTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter(Boolean);
 
   const byCol = { 1: [], 2: [], 3: [] };
   safeTasks.forEach((t) => {
@@ -436,7 +447,6 @@ function renderBoard() {
   [1, 2, 3].forEach((id) => {
     const list = elements.taskLists[id];
     const tasks = byCol[id] || [];
-    // restore original count text (just the number)
     elements.taskCounts[id].textContent = tasks.length;
 
     tasks.forEach((t) => {
@@ -445,26 +455,25 @@ function renderBoard() {
       card.dataset.id = t.id;
       card.dataset.status = t.columnId;
 
-      // Title (h4)
       const titleEl = document.createElement("h4");
       titleEl.textContent = t.title || "";
       card.appendChild(titleEl);
 
-      // Description (p)
       if (t.description) {
         const desc = document.createElement("p");
         desc.textContent = t.description;
         card.appendChild(desc);
       }
 
-      // Tags
       const tags = Array.isArray(t.tags)
         ? t.tags
-        : (typeof t.tags === "string" ? t.tags.split(",") : []).map(s => s.trim()).filter(Boolean);
+        : (typeof t.tags === "string" ? t.tags.split(",") : [])
+            .map((s) => s.trim())
+            .filter(Boolean);
       if (tags.length) {
         const tagsWrap = document.createElement("div");
         tagsWrap.className = "task-tags";
-        tags.forEach(tag => {
+        tags.forEach((tag) => {
           const span = document.createElement("span");
           span.className = "task-tag";
           span.textContent = tag;
@@ -473,21 +482,21 @@ function renderBoard() {
         card.appendChild(tagsWrap);
       }
 
-      // Meta (due date)
       if (t.dueDate) {
         const due = new Date(t.dueDate);
         const meta = document.createElement("div");
         meta.className = "task-meta";
         meta.innerHTML = `<i class="fas fa-calendar-alt"></i> ${escapeHtml(
-          `${due.toLocaleDateString()} ${due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+          `${due.toLocaleDateString()} ${due.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}`
         )}`;
         card.appendChild(meta);
       }
 
-      // Click to edit
       card.addEventListener("click", () => openEditModal(t));
 
-      // Draggable
       card.setAttribute("draggable", "true");
       list.appendChild(card);
     });
@@ -497,7 +506,7 @@ function renderBoard() {
 }
 
 // ==============================
-// Drag & Drop
+// Drag & Drop (optimistic with revert)
 // ==============================
 function setupDragAndDrop() {
   document.querySelectorAll(".task-card").forEach((card) => {
@@ -505,14 +514,16 @@ function setupDragAndDrop() {
     card.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "move";
       card.classList.add("dragging");
-      state.dragData = { id: card.dataset.id, from: Number(card.dataset.status) || 1 };
+      state.lastDrag = {
+        id: card.dataset.id,
+        from: Number(card.dataset.status) || 1,
+      };
     });
   });
 
   document.addEventListener("dragend", (e) => {
     const card = e.target.closest?.(".task-card");
     if (card) card.classList.remove("dragging");
-    state.dragData = null;
   });
 
   document.querySelectorAll(".task-list").forEach((list) => {
@@ -526,17 +537,34 @@ function setupDragAndDrop() {
       e.preventDefault();
       list.classList.remove("drag-over");
 
-      const newCol = getColIdFromEl(list);
-      const id = state.dragData?.id;
-      if (!id || !newCol) return;
+      const id = state.lastDrag?.id;
+      const from = state.lastDrag?.from;
+      const to = getColIdFromEl(list);
+      if (!id || !to || from === undefined) return;
 
-      const t = state.tasks.find((x) => String(x?.id) === String(id));
-      if (!t) return;
+      const task = state.tasks.find((x) => String(x?.id) === String(id));
+      if (!task) return;
 
-      const ok = await updateTask(t.id, { ...t, columnId: newCol, isDone: newCol === 3 });
+      // optimistic update
+      const prev = { columnId: task.columnId, isDone: task.isDone };
+      replaceTask(id, { columnId: to, isDone: to === 3 });
+      renderBoard();
+
+      // server update
+      const ok = await updateTask(id, {
+        title: task.title,
+        columnId: to,
+        isDone: to === 3,
+      });
+
       if (ok) {
         showToast("Task moved.", "success");
-      } // updateTask already shows errors if not ok
+      } else {
+        // revert on failure
+        replaceTask(id, prev);
+        renderBoard();
+      }
+      state.lastDrag = null;
     });
   });
 }
@@ -549,19 +577,24 @@ function openEditModal(task = null) {
 
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
-  document.getElementById("task-description").value = task ? (task.description || "") : "";
+  document.getElementById("task-description").value = task ? task.description || "" : "";
 
   const tagsEl = document.getElementById("task-tags");
-  if (tagsEl) tagsEl.value = task && task.tags
-    ? (Array.isArray(task.tags) ? task.tags.join(", ") : task.tags)
-    : "";
+  if (tagsEl)
+    tagsEl.value = task && task.tags
+      ? Array.isArray(task.tags)
+        ? task.tags.join(", ")
+        : task.tags
+      : "";
 
   const dueEl = document.getElementById("task-dueDate");
   if (dueEl) {
     if (task && task.dueDate) {
       const d = new Date(task.dueDate);
       const pad = (n) => String(n).padStart(2, "0");
-      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+        d.getHours()
+      )}:${pad(d.getMinutes())}`;
       dueEl.value = local;
     } else {
       dueEl.value = "";
@@ -569,7 +602,7 @@ function openEditModal(task = null) {
   }
 
   const statusEl = document.getElementById("task-columnId");
-  if (statusEl) statusEl.value = task ? (Number(task.columnId) || 1) : 1;
+  if (statusEl) statusEl.value = task ? Number(task.columnId) || 1 : 1;
 
   const doneEl = document.getElementById("task-isDone");
   if (doneEl) doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
@@ -584,35 +617,36 @@ function closeModal() {
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
-    // fall back to any text input if specific class not present
-    const input = form.querySelector(".task-title-input") || form.querySelector("input[type='text']");
+    const input =
+      form.querySelector(".task-title-input") || form.querySelector("input[type='text']");
     const btn = form.querySelector("button");
     const columnId = getColIdFromEl(form);
 
     const submitNew = async () => {
       const title = (input.value || "").trim();
       if (!title) return;
-      try {
-        showLoading(true);
-        const ok = await createTask({
-          title,
-          description: "",
-          tags: "",
-          columnId,
-          dueDate: null,
-          isDone: columnId === 3,
-        });
-        if (ok) input.value = "";
-      } catch (err) {
-        console.error(err);
-      } finally {
-        showLoading(false);
-      }
+      showLoading(true);
+      const ok = await createTask({
+        title,
+        description: "",
+        tags: "",
+        columnId,
+        dueDate: null,
+        isDone: columnId === 3,
+      }).catch(console.error);
+      showLoading(false);
+      if (ok) input.value = "";
     };
 
-    btn?.addEventListener("click", (e) => { e.preventDefault(); submitNew(); });
+    btn?.addEventListener("click", (e) => {
+      e.preventDefault();
+      submitNew();
+    });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); submitNew(); }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submitNew();
+      }
     });
   });
 }
@@ -630,7 +664,6 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
-  // Modal save (mirror TS payload)
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
@@ -648,7 +681,8 @@ function init() {
     const selectedColumn = statusEl ? Number(statusEl.value) : 1;
     const isDoneChecked = doneEl ? !!doneEl.checked : false;
     const columnId = isDoneChecked ? 3 : selectedColumn;
-    const dueDate = (dueEl && dueEl.value) ? new Date(dueEl.value).toISOString() : null;
+    const dueDate =
+      dueEl && dueEl.value ? new Date(dueEl.value).toISOString() : null;
 
     const payload = {
       title,
@@ -659,37 +693,27 @@ function init() {
       dueDate,
     };
 
-    try {
-      if (taskId) {
-        const ok = await updateTask(taskId, payload);
-        if (ok) showToast("Task updated!", "success");
-      } else {
-        const ok = await createTask(payload);
-        if (ok) showToast("Task created!", "success");
-      }
-      closeModal();
-    } catch (error) {
-      showToast("Failed to save task.", "error");
-      console.error(error);
+    let ok = false;
+    if (taskId) {
+      ok = await updateTask(taskId, payload);
+      if (ok) showToast("Task updated!", "success");
+    } else {
+      ok = await createTask(payload);
+      if (ok) showToast("Task created!", "success");
     }
+    if (ok) closeModal();
   });
 
   elements.taskDelete.addEventListener("click", async () => {
     const id = document.getElementById("task-id").value;
     if (!id) return;
-    try {
-      if (confirm("Delete this task?")) {
-        await deleteTask(id);
-        closeModal();
-      }
-    } catch (error) {
-      showToast("Failed to delete.", "error");
+    if (confirm("Delete this task?")) {
+      await deleteTask(id);
+      closeModal();
     }
   });
 
   wireQuickAddForms();
-  // initial DnD bind happens after first render
-  loadTasks();
 }
 
 document.addEventListener("DOMContentLoaded", init);
