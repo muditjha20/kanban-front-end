@@ -61,7 +61,7 @@ const elements = {
 };
 
 // ==============================
-// Firebase (compat SDKs loaded in index.html)
+// Firebase (compat)
 // ==============================
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -72,14 +72,10 @@ const auth = firebase.auth();
 auth.onAuthStateChanged(async (user) => {
   if (user) {
     state.currentUser = user;
-    if (elements.userEmail) elements.userEmail.textContent = user.email || "";
-    if (elements.userAvatar)
-      elements.userAvatar.textContent = (user.email || "U")
-        .charAt(0)
-        .toUpperCase();
+    elements.userEmail && (elements.userEmail.textContent = user.email || "");
+    elements.userAvatar && (elements.userAvatar.textContent = (user.email || "U").charAt(0).toUpperCase());
     elements.userInfo?.classList.remove("hidden");
     elements.logoutBtn?.classList.remove("hidden");
-
     showBoard();
     try {
       await loadTasks();
@@ -101,7 +97,7 @@ auth.onAuthStateChanged(async (user) => {
 function showAuth() {
   elements.authSection.classList.remove("hidden");
   elements.boardSection.classList.add("hidden");
-  elements.loadingOverlay.classList.add("hidden"); // no overlay before login
+  elements.loadingOverlay.classList.add("hidden"); // no overlay pre-login
   elements.warmupMessage?.classList.add("hidden");
 }
 function showBoard() {
@@ -142,7 +138,6 @@ const getColIdFromEl = (el) => {
 // Auth wiring
 // ==============================
 function setupAuthListeners() {
-  // Login
   elements.loginForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = document.getElementById("login-email").value.trim();
@@ -159,15 +154,13 @@ function setupAuthListeners() {
     }
   });
 
-  // Register (note: confirm input id is 'register-confirm')
   elements.registerForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = document.getElementById("register-email").value.trim();
     const password = document.getElementById("register-password").value;
     const confirm = document.getElementById("register-confirm").value;
     if (password !== confirm) {
-      document.getElementById("register-error").textContent =
-        "Passwords do not match";
+      document.getElementById("register-error").textContent = "Passwords do not match";
       return;
     }
     try {
@@ -182,12 +175,11 @@ function setupAuthListeners() {
     }
   });
 
-  // Google sign-in (pure click; no awaits before popup)
+  // Google sign-in (pure click)
   elements.googleSignIn.addEventListener("click", () => {
     const provider = new firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
-    auth
-      .signInWithPopup(provider)
+    auth.signInWithPopup(provider)
       .then(() => showToast("Signed in with Google!", "success"))
       .catch((error) => {
         console.error("Google sign-in error:", error);
@@ -200,7 +192,6 @@ function setupAuthListeners() {
       });
   });
 
-  // Logout
   elements.logoutBtn.addEventListener("click", async () => {
     try {
       await auth.signOut();
@@ -210,7 +201,6 @@ function setupAuthListeners() {
     }
   });
 
-  // Tabs
   elements.authTabs.forEach((tab) => {
     tab.addEventListener("click", () => {
       const tabName = tab.getAttribute("data-tab");
@@ -223,10 +213,9 @@ function setupAuthListeners() {
 }
 
 // ==============================
-// API fetch (flat camelCase bodies, like the TS client)
+// API fetch (flat camelCase bodies, like TS client)
 // ==============================
 async function apiFetch(path, options = {}) {
-  // soft warmup hint (Render cold start)
   if (!state.isServerWarmingUp && !options.isRetry) {
     const warmupTimer = setTimeout(() => {
       state.isServerWarmingUp = true;
@@ -269,10 +258,7 @@ async function apiFetch(path, options = {}) {
     return response.status === 204 ? null : response.json();
   } catch (error) {
     if (options.onComplete) options.onComplete?.();
-    if (
-      error.message.includes("Failed to fetch") ||
-      error.message.includes("NetworkError")
-    ) {
+    if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
       elements.corsWarning?.classList.remove("hidden");
     }
     throw error;
@@ -338,7 +324,6 @@ async function createTask(task) {
 async function updateTask(id, updates) {
   showLoading(true);
   try {
-    // TS update sends only these three
     const body = {
       title: (updates.title || "").trim(),
       isDone: !!updates.isDone,
@@ -388,7 +373,7 @@ async function deleteTask(id) {
 }
 
 // ==============================
-// Rendering
+// Rendering (MATCH styles.css)
 // ==============================
 function renderBoard() {
   [1, 2, 3].forEach((id) => (elements.taskLists[id].innerHTML = ""));
@@ -406,59 +391,53 @@ function renderBoard() {
 
     tasks.forEach((t) => {
       const card = document.createElement("div");
-      card.className = "task";
+      card.className = "task-card";
       card.dataset.id = t.id;
       card.dataset.status = t.columnId;
 
-      const due = t.dueDate ? new Date(t.dueDate) : null;
-      const dueStr =
-        due &&
-        `${due.toLocaleDateString()} ${due.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        })}`;
+      // Title (h4) for styles.css
+      const titleEl = document.createElement("h4");
+      titleEl.textContent = t.title || "";
+      card.appendChild(titleEl);
 
-      card.innerHTML = `
-        <div class="task-title">${escapeHtml(t.title)}</div>
-        <div class="task-meta">
-          ${due ? `<span>${escapeHtml(dueStr)}</span>` : ""}
-        </div>
-        <div class="task-actions">
-          <button class="btn-icon edit-btn" title="Edit"><i class="fas fa-pen"></i></button>
-          ${
-            Number(t.columnId) === 3 || t.isDone
-              ? `<button class="btn-icon reopen-btn" title="Reopen"><i class="fas fa-rotate-left"></i></button>`
-              : `<button class="btn-icon complete-btn" title="Mark as Completed"><i class="fas fa-check"></i></button>`
-          }
-          <button class="btn-icon delete-btn" title="Delete"><i class="fas fa-trash"></i></button>
-        </div>
-      `;
-
-      card.querySelector(".edit-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        openEditModal(t);
-      });
-      card.querySelector(".delete-btn").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (confirm("Delete this task?")) await deleteTask(t.id);
-      });
-      const completeBtn = card.querySelector(".complete-btn");
-      if (completeBtn) {
-        completeBtn.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          await updateTask(t.id, { ...t, columnId: 3, isDone: true });
-          showToast("Moved to Completed.", "success");
-        });
-      }
-      const reopenBtn = card.querySelector(".reopen-btn");
-      if (reopenBtn) {
-        reopenBtn.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          await updateTask(t.id, { ...t, columnId: 1, isDone: false });
-          showToast("Reopened to Active.", "success");
-        });
+      // Description (p) if present
+      if (t.description) {
+        const desc = document.createElement("p");
+        desc.textContent = t.description;
+        card.appendChild(desc);
       }
 
+      // Tags row if present (supports string "a,b" or array)
+      const tags = Array.isArray(t.tags)
+        ? t.tags
+        : (typeof t.tags === "string" ? t.tags.split(",") : []).map(s => s.trim()).filter(Boolean);
+      if (tags.length) {
+        const tagsWrap = document.createElement("div");
+        tagsWrap.className = "task-tags";
+        tags.forEach(tag => {
+          const span = document.createElement("span");
+          span.className = "task-tag";
+          span.textContent = tag;
+          tagsWrap.appendChild(span);
+        });
+        card.appendChild(tagsWrap);
+      }
+
+      // Meta (due date)
+      if (t.dueDate) {
+        const due = new Date(t.dueDate);
+        const meta = document.createElement("div");
+        meta.className = "task-meta";
+        meta.innerHTML = `<i class="fas fa-calendar-alt"></i> ${escapeHtml(
+          `${due.toLocaleDateString()} ${due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+        )}`;
+        card.appendChild(meta);
+      }
+
+      // Click to edit (original interaction), keep UI clean
+      card.addEventListener("click", () => openEditModal(t));
+
+      // Draggable
       card.setAttribute("draggable", "true");
       list.appendChild(card);
     });
@@ -471,20 +450,17 @@ function renderBoard() {
 // Drag & Drop
 // ==============================
 function setupDragAndDrop() {
-  document.querySelectorAll(".task").forEach((card) => {
+  document.querySelectorAll(".task-card").forEach((card) => {
     card.setAttribute("draggable", "true");
     card.addEventListener("dragstart", (e) => {
-      state.dragData = {
-        id: card.dataset.id,
-        from: Number(card.dataset.status) || 1,
-      };
       e.dataTransfer.effectAllowed = "move";
       card.classList.add("dragging");
+      state.dragData = { id: card.dataset.id, from: Number(card.dataset.status) || 1 };
     });
   });
 
   document.addEventListener("dragend", (e) => {
-    const card = e.target.closest?.(".task");
+    const card = e.target.closest?.(".task-card");
     if (card) card.classList.remove("dragging");
     state.dragData = null;
   });
@@ -518,21 +494,19 @@ function openEditModal(task = null) {
 
   document.getElementById("task-id").value = task ? task.id : "";
   document.getElementById("task-title").value = task ? task.title : "";
-  document.getElementById("task-description").value = task
-    ? task.description || ""
-    : "";
+  document.getElementById("task-description").value = task ? (task.description || "") : "";
 
   const tagsEl = document.getElementById("task-tags");
-  if (tagsEl) tagsEl.value = task && task.tags ? task.tags : "";
+  if (tagsEl) tagsEl.value = task && task.tags
+    ? (Array.isArray(task.tags) ? task.tags.join(", ") : task.tags)
+    : "";
 
   const dueEl = document.getElementById("task-dueDate");
   if (dueEl) {
     if (task && task.dueDate) {
       const d = new Date(task.dueDate);
       const pad = (n) => String(n).padStart(2, "0");
-      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
-        d.getDate()
-      )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       dueEl.value = local;
     } else {
       dueEl.value = "";
@@ -540,7 +514,7 @@ function openEditModal(task = null) {
   }
 
   const statusEl = document.getElementById("task-columnId");
-  if (statusEl) statusEl.value = task ? Number(task.columnId) || 1 : 1;
+  if (statusEl) statusEl.value = task ? (Number(task.columnId) || 1) : 1;
 
   const doneEl = document.getElementById("task-isDone");
   if (doneEl) doneEl.checked = !!(task && (Number(task.columnId) === 3 || task.isDone));
@@ -555,9 +529,8 @@ function closeModal() {
 // ==============================
 function wireQuickAddForms() {
   elements.addTaskForms.forEach((form) => {
-    const input = form.querySelector("input[type='text']");
+    const input = form.querySelector(".task-title-input");
     const btn = form.querySelector("button");
-
     const columnId = getColIdFromEl(form);
 
     const submitNew = async () => {
@@ -581,17 +554,9 @@ function wireQuickAddForms() {
       }
     };
 
-    if (btn) {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        submitNew();
-      });
-    }
+    btn?.addEventListener("click", (e) => { e.preventDefault(); submitNew(); });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        submitNew();
-      }
+      if (e.key === "Enter") { e.preventDefault(); submitNew(); }
     });
   });
 }
@@ -610,7 +575,7 @@ function init() {
     if (e.target === elements.taskModal) closeModal();
   });
 
-  // Modal save → mirror TS payload
+  // Modal save (mirror TS payload)
   elements.taskForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const taskId = document.getElementById("task-id").value;
@@ -635,7 +600,7 @@ function init() {
       isDone: columnId === 3,
       columnId,
       description,
-      tags: "",
+      tags: document.getElementById("task-tags")?.value || "",
       dueDate,
     };
 
